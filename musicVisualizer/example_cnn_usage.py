@@ -1,0 +1,284 @@
+"""
+example_cnn_usage.py
+
+Example script showing how to use the CNN color transfer system.
+
+This script demonstrates:
+1. Basic usage: triangulate an image and apply a color palette using CNN
+2. Reusing a previously trained model (much faster)
+3. Comparing different coloring methods
+4. Visualizing palette differences
+"""
+
+import sys
+import os
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from MusicVisualizer import imageTriangulation
+import colour
+import CNN
+
+
+def example_1_basic_usage():
+    """
+    Basic usage: triangulate spiderman, apply vegetables palette using CNN.
+    
+    This example:
+    1. Loads spiderman.jpg and detects edges
+    2. Performs Delaunay triangulation
+    3. Extracts color palette from vegetables.jpg
+    4. Trains a CNN to map colors
+    5. Applies CNN to paint each triangle
+    6. Displays the result
+    
+    Expected output:
+    - Triangulated image with colors from vegetables palette
+    - Colors are more harmonious than simple nearest-neighbor matching
+    """
+    print("\n" + "="*70)
+    print("EXAMPLE 1: Basic CNN Color Transfer")
+    print("="*70)
+    
+    results = imageTriangulation.pipeline_with_cnn(
+        source_image_path='originalImages/spiderman.jpg',
+        target_image_path='originalImages/vegetables.jpg' if os.path.exists('originalImages/vegetables.jpg') else 'hybridTheory.jpeg',
+        threshold=50,
+        density_reduction=60,
+        num_clusters=25,
+        num_distinct=10,
+        train_epochs=1000,
+        save_model_path='models/spiderman_vegetables.pth',
+        device='cpu',
+        save_output=True
+    )
+    
+    print("\nTraining complete! Model saved to: models/spiderman_vegetables.pth")
+    return results
+
+
+def example_2_reuse_trained_model():
+    """
+    Reuse a previously trained model (much faster than retraining).
+    
+    This example demonstrates:
+    1. Loading a pre-trained model from disk
+    2. Applying it to the same source image with the same target
+    3. Quick inference without the training step
+    
+    This is useful when:
+    - You've already trained a model and want to apply it again
+    - You want to apply the same style to multiple source images
+    - You want to experiment with different triangulation parameters
+    
+    Expected runtime: ~30 seconds (vs 10+ minutes for training)
+    """
+    print("\n" + "="*70)
+    print("EXAMPLE 2: Reusing a Trained Model")
+    print("="*70)
+    
+    model_path = 'models/spiderman_vegetables.pth'
+    
+    if not os.path.exists(model_path):
+        print(f"Model not found at {model_path}")
+        print("Run example_1_basic_usage() first to train a model.")
+        return None
+    
+    results = imageTriangulation.pipeline_with_cnn(
+        source_image_path='originalImages/spiderman.jpg',
+        target_image_path='originalImages/vegetables.jpg' if os.path.exists('originalImages/vegetables.jpg') else 'hybridTheory.jpeg',
+        use_pretrained_model=model_path,
+        threshold=50,
+        density_reduction=60,
+        device='cpu',
+        save_output=True
+    )
+    
+    print("\nModel applied successfully!")
+    return results
+
+
+def example_3_different_triangulation_params():
+    """
+    Use different triangulation parameters with same trained model.
+    
+    This example shows how the triangulation density affects the final result:
+    - Higher density_reduction = fewer, larger triangles = coarser result
+    - Lower density_reduction = more, smaller triangles = finer detail
+    
+    You can reuse the same trained model with different geometric parameters.
+    """
+    print("\n" + "="*70)
+    print("EXAMPLE 3: Different Triangulation Parameters")
+    print("="*70)
+    
+    model_path = 'models/spiderman_vegetables.pth'
+    
+    if not os.path.exists(model_path):
+        print(f"Model not found. Run example_1_basic_usage() first.")
+        return None
+    
+    print("\nTrying with fewer triangles (coarser result)...")
+    results_coarse = imageTriangulation.pipeline_with_cnn(
+        source_image_path='originalImages/spiderman.jpg',
+        target_image_path='originalImages/vegetables.jpg' if os.path.exists('originalImages/vegetables.jpg') else 'hybridTheory.jpeg',
+        use_pretrained_model=model_path,
+        threshold=50,
+        density_reduction=120,  # Fewer triangles
+        device='cpu',
+        save_output=True
+    )
+    
+    print("\nTrying with more triangles (finer result)...")
+    results_fine = imageTriangulation.pipeline_with_cnn(
+        source_image_path='originalImages/spiderman.jpg',
+        target_image_path='originalImages/vegetables.jpg' if os.path.exists('originalImages/vegetables.jpg') else 'hybridTheory.jpeg',
+        use_pretrained_model=model_path,
+        threshold=50,
+        density_reduction=30,  # More triangles
+        device='cpu',
+        save_output=True
+    )
+    
+    print("\nComparison complete! Notice how triangulation density affects detail.")
+    return {'coarse': results_coarse, 'fine': results_fine}
+
+
+def example_4_palette_preview():
+    """
+    Preview source and target palettes before training.
+    
+    This is useful for:
+    - Seeing what colors will be available
+    - Choosing good source/target image pairs
+    - Understanding the color mapping challenge
+    """
+    print("\n" + "="*70)
+    print("EXAMPLE 4: Palette Preview and Comparison")
+    print("="*70)
+    
+    # Extract palettes
+    print("\nExtracting source palette from: spiderman.jpg")
+    source_palette_rgb, source_palette_lab, source_pct = colour.get_palette_for_cnn(
+        'originalImages/spiderman.jpg', num_clusters=25, num_distinct=10
+    )
+    
+    target_image = 'originalImages/vegetables.jpg' if os.path.exists('originalImages/vegetables.jpg') else 'hybridTheory.jpeg'
+    print(f"\nExtracting target palette from: {target_image}")
+    target_palette_rgb, target_palette_lab, target_pct = colour.get_palette_for_cnn(
+        target_image, num_clusters=25, num_distinct=10
+    )
+    
+    # Visualize comparison
+    print("\nDisplaying palette comparison...")
+    colour.visualize_palette_comparison(
+        source_palette_rgb, target_palette_rgb,
+        label1="Source Palette (Spiderman)",
+        label2=f"Target Palette ({target_image})"
+    )
+    
+    return {
+        'source': source_palette_rgb,
+        'target': target_palette_rgb
+    }
+
+
+def example_5_compare_methods():
+    """
+    Create side-by-side comparison of different coloring methods.
+    
+    Compares:
+    1. Original centroid-based coloring
+    2. Nearest color matching (simple palette mapping)
+    3. CNN color transfer (neural network method)
+    4. Color palettes used
+    
+    This demonstrates the improvements of the CNN approach.
+    """
+    print("\n" + "="*70)
+    print("EXAMPLE 5: Method Comparison")
+    print("="*70)
+    
+    # First, load and triangulate image
+    print("\nLoading and triangulating image...")
+    imageTriangulation.setup_matplotlib()
+    image_orig, image = imageTriangulation.load_image('originalImages/spiderman.jpg')
+    image = imageTriangulation.convert_to_greyscale(image)
+    image = imageTriangulation.sharpen_image(image)
+    image = imageTriangulation.detect_edges(image)
+    S = imageTriangulation.determine_vertices(image, threshold=50, density_reduction=60)
+    triangles = imageTriangulation.Delaunay(S)
+    
+    # Create comparison
+    print("\nCreating comparison visualization...")
+    target_image = 'originalImages/vegetables.jpg' if os.path.exists('originalImages/vegetables.jpg') else 'hybridTheory.jpeg'
+    
+    comparison_fig = CNN.compare_methods(
+        S, triangles, image_orig,
+        source_path='originalImages/spiderman.jpg',
+        target_path=target_image,
+        model=None,  # Will train a new model
+        num_clusters=25,
+        num_distinct=10,
+        device='cpu'
+    )
+    
+    comparison_fig.show()
+    return comparison_fig
+
+
+def interactive_menu():
+    """
+    Interactive menu for running examples.
+    """
+    while True:
+        print("\n" + "="*70)
+        print("CNN COLOR TRANSFER EXAMPLES")
+        print("="*70)
+        print("\nChoose an example to run:")
+        print("1. Basic usage (train and apply CNN)")
+        print("2. Reuse trained model (fast)")
+        print("3. Different triangulation parameters")
+        print("4. Preview palettes")
+        print("5. Compare coloring methods")
+        print("0. Exit")
+        
+        choice = input("\nEnter your choice (0-5): ").strip()
+        
+        if choice == '0':
+            print("Exiting.")
+            break
+        elif choice == '1':
+            example_1_basic_usage()
+        elif choice == '2':
+            example_2_reuse_trained_model()
+        elif choice == '3':
+            example_3_different_triangulation_params()
+        elif choice == '4':
+            example_4_palette_preview()
+        elif choice == '5':
+            example_5_compare_methods()
+        else:
+            print("Invalid choice. Please try again.")
+
+
+if __name__ == '__main__':
+    # You can uncomment individual examples or use the interactive menu
+    
+    print("\n" + "="*70)
+    print("WELCOME TO CNN COLOR TRANSFER SYSTEM")
+    print("="*70)
+    print("\nThis system uses neural networks to intelligently map colors")
+    print("from a source image to a target palette when triangulating.")
+    print("\nExamples available:")
+    print("  - Basic CNN training and application")
+    print("  - Reusing pre-trained models")
+    print("  - Comparing different methods")
+    print("  - Palette visualization")
+    
+    # Uncomment to run specific example:
+    # example_1_basic_usage()
+    
+    # Or use interactive menu:
+    interactive_menu()

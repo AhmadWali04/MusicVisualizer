@@ -543,6 +543,133 @@ def visualize_color_palette(centers, percentages, color_space):
     plt.show()
 
 
+def get_palette_for_cnn(image_path, num_clusters=25, num_distinct=10, use_lab=True):
+    """
+    Extract color palette optimized for CNN training.
+    
+    This is a convenience wrapper that combines existing functions
+    to produce exactly what CNN.py needs.
+    
+    Args:
+        image_path: Path to palette/style image
+        num_clusters: Number of K-Means clusters (default: 25)
+        num_distinct: Number of distinct colors to select (default: 10)
+        use_lab: If True, use LAB color space (recommended - default: True)
+    
+    Returns:
+        Tuple containing:
+            - palette_rgb: numpy array (num_distinct, 3) - RGB colors [0-255]
+            - palette_lab: numpy array (num_distinct, 3) - LAB colors
+            - percentages: numpy array (num_distinct,) - percentage distribution
+    
+    Example:
+        palette_rgb, palette_lab, percentages = get_palette_for_cnn(
+            'vegetables.jpg', num_clusters=25, num_distinct=10
+        )
+        print(f"Extracted {len(palette_rgb)} distinct colors")
+    """
+    print(f"\nExtracting palette from: {image_path}")
+    
+    # Load image
+    _, pixels = load_image_pixels(image_path)
+    pixels_lab = convert_rgb_pixels_to_lab(pixels)
+    
+    if use_lab:
+        # Use LAB color space for clustering
+        print(f"Running K-Means in LAB space ({num_clusters} clusters)...")
+        _, centers_lab, _, percentages = run_kmeans_lab(pixels_lab, num_clusters)
+        
+        # Convert LAB centers to RGB for output
+        centers_rgb = []
+        for lab in centers_lab:
+            lab_img = np.array([[lab]], dtype=np.uint8)
+            rgb_img = cv2.cvtColor(lab_img, cv2.COLOR_LAB2RGB)
+            centers_rgb.append(rgb_img[0, 0])
+        centers_rgb = np.array(centers_rgb)
+        
+        # Select distinct colors
+        print(f"Selecting {num_distinct} distinct colors...")
+        palette_lab, palette_rgb, _ = select_distinct_colors_lab(
+            centers_lab, centers_rgb, num_to_select=num_distinct
+        )
+        percentages_selected = percentages[_]
+    else:
+        # Use RGB color space for clustering
+        print(f"Running K-Means in RGB space ({num_clusters} clusters)...")
+        _, centers_rgb, _, percentages = run_kmeans(pixels, num_clusters)
+        
+        # Select distinct colors
+        print(f"Selecting {num_distinct} distinct colors...")
+        palette_rgb, _ = select_distinct_colors(centers_rgb, num_to_select=num_distinct)
+        percentages_selected = percentages[_]
+        
+        # Convert palette to LAB for reference
+        palette_rgb_uint8 = palette_rgb.astype(np.uint8).reshape(1, -1, 3)
+        palette_lab = cv2.cvtColor(palette_rgb_uint8, cv2.COLOR_RGB2LAB).reshape(-1, 3)
+    
+    print(f"Palette extracted: {len(palette_rgb)} colors")
+    return palette_rgb, palette_lab, percentages_selected
+
+
+def visualize_palette_comparison(palette1_rgb, palette2_rgb,
+                                label1="Palette 1", label2="Palette 2"):
+    """
+    Visualize two color palettes side by side.
+    
+    Useful for comparing source vs target palettes before CNN training.
+    
+    Args:
+        palette1_rgb: numpy array (N, 3) - first palette, RGB values [0-255]
+        palette2_rgb: numpy array (M, 3) - second palette, RGB values [0-255]
+        label1: Label for first palette (default: "Palette 1")
+        label2: Label for second palette (default: "Palette 2")
+    
+    Example:
+        source_palette, _, _ = get_palette_for_cnn('spiderman.jpg')
+        target_palette, _, _ = get_palette_for_cnn('vegetables.jpg')
+        visualize_palette_comparison(source_palette, target_palette, 
+                                    "Spiderman Colors", "Vegetable Colors")
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 4))
+    
+    # Palette 1
+    x_position = 0
+    for center in palette1_rgb:
+        normalized_color = center / 255.0
+        width = 1.0 / len(palette1_rgb)
+        rect = Rectangle((x_position, 0), width, 1, 
+                        facecolor=normalized_color, edgecolor='black', linewidth=2)
+        ax1.add_patch(rect)
+        x_position += width
+    
+    ax1.set_xlim(0, 1)
+    ax1.set_ylim(0, 1)
+    ax1.set_title(label1, fontsize=14, fontweight='bold')
+    ax1.set_xticks([])
+    ax1.set_yticks([])
+    ax1.set_aspect('auto')
+    
+    # Palette 2
+    x_position = 0
+    for center in palette2_rgb:
+        normalized_color = center / 255.0
+        width = 1.0 / len(palette2_rgb)
+        rect = Rectangle((x_position, 0), width, 1,
+                        facecolor=normalized_color, edgecolor='black', linewidth=2)
+        ax2.add_patch(rect)
+        x_position += width
+    
+    ax2.set_xlim(0, 1)
+    ax2.set_ylim(0, 1)
+    ax2.set_title(label2, fontsize=14, fontweight='bold')
+    ax2.set_xticks([])
+    ax2.set_yticks([])
+    ax2.set_aspect('auto')
+    
+    plt.tight_layout()
+    plt.show()
+
+
 def main():
     path = "originalImages/spiderman.jpg"
     #path = "hybridTheory.jpeg"
