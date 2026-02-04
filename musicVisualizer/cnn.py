@@ -21,11 +21,48 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import sys
 import os
+import time
+from datetime import timedelta
+
+try:
+    import plotly.graph_objects as go
+    import plotly.subplots as sp
+except ImportError:
+    go = None
+    sp = None
 
 # Import our own modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import colour
 from PIL import Image
+
+
+def print_progress_bar(iteration, total, prefix='', length=50, decimals=1):
+    """
+    Create terminal progress bar with time estimation.
+    
+    Args:
+        iteration: Current iteration (0 to total)
+        total: Total iterations
+        prefix: Prefix string
+        length: Length of progress bar
+        decimals: Decimals for percentage
+    """
+    percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
+    filled_length = int(length * iteration // total)
+    bar = '█' * filled_length + '░' * (length - filled_length)
+    
+    # Calculate time remaining
+    if iteration > 0:
+        elapsed = time.time() - print_progress_bar.start_time
+        rate = elapsed / iteration
+        remaining = rate * (total - iteration)
+        eta_str = str(timedelta(seconds=int(remaining)))
+    else:
+        eta_str = "calculating..."
+    
+    sys.stdout.write(f'\r{prefix} |{bar}| {percent}% ETA: {eta_str}')
+    sys.stdout.flush()
 
 
 class ColorTransferNet(nn.Module):
@@ -404,13 +441,16 @@ def train_color_transfer_network(source_pixels, target_palette,
     w_nearest = 0.5
     w_smoothness = 0.1
     
-    # Training loop
+    # Training loop with progress bar
     loss_history = {
         'total': [],
         'histogram': [],
         'nearest_color': [],
         'smoothness': []
     }
+    
+    # Initialize progress bar timer
+    print_progress_bar.start_time = time.time()
     
     for epoch in range(epochs):
         # Sample random batch
@@ -447,15 +487,21 @@ def train_color_transfer_network(source_pixels, target_palette,
         loss_history['nearest_color'].append(nearest_color_loss.item())
         loss_history['smoothness'].append(smoothness_loss.item())
         
-        # Log progress
-        if (epoch + 1) % 50 == 0:
-            print(f"Epoch {epoch+1}/{epochs} - "
-                  f"Total: {total_loss.item():.6f}, "
-                  f"Histogram: {histogram_loss.item():.6f}, "
-                  f"Nearest: {nearest_color_loss.item():.6f}, "
+        # Update progress bar
+        print_progress_bar(epoch + 1, epochs, 
+                          prefix=f'Training (Loss: {total_loss.item():.6f})', 
+                          length=40)
+        
+        # Log detailed progress every 100 epochs
+        if (epoch + 1) % 100 == 0:
+            print(f"\n  └─ Epoch {epoch+1}/{epochs} | "
+                  f"Total: {total_loss.item():.6f} | "
+                  f"Histogram: {histogram_loss.item():.6f} | "
+                  f"Nearest: {nearest_color_loss.item():.6f} | "
                   f"Smoothness: {smoothness_loss.item():.6f}")
+            print_progress_bar.start_time = time.time() - (time.time() - print_progress_bar.start_time)
     
-    print("\nTraining complete!")
+    print("\n\n✓ Training complete!")
     
     return model, loss_history
 
@@ -465,11 +511,15 @@ def visualize_training_progress(model, source_pixels, target_palette,
     """
     Visualize how the network's color mapping improves during training.
     
-    Creates a figure showing:
-    - Source color distribution (3D scatter in RGB space)
-    - Target palette colors
-    - Current network output color distribution
-    - Loss curves across training
+    Creates 6 separate interactive Plotly figures:
+    1. Source color distribution (3D scatter in RGB space)
+    2. Target palette colors (3D scatter)
+    3. Network output color distribution vs target (3D scatter with targets)
+    4. Total loss over training (line plot)
+    5. Component losses (line plot with histogram, nearest-color, smoothness)
+    6. Sample color mappings in R-G plane (scatter with arrows)
+    
+    Uses Plotly for interactive visualization matching colour.py style.
     
     Args:
         model: Trained ColorTransferNet
@@ -477,9 +527,12 @@ def visualize_training_progress(model, source_pixels, target_palette,
         target_palette: Target palette tensor
         loss_history: Dict with loss values from training
         device: 'cpu' or 'cuda'
-        save_path: Optional path to save visualization
+        save_path: Optional path to save visualization (not used with Plotly)
     """
-    print("\n=== Creating Training Visualization ===")
+    if go is None:
+        raise RuntimeError("Plotly is not installed. Install it or use: pip install plotly")
+    
+    print("\n=== Creating Training Visualizations with Plotly (6 separate windows) ===")
     
     # Get model output
     model.eval()
@@ -498,99 +551,242 @@ def visualize_training_progress(model, source_pixels, target_palette,
     output_np = output_sample.cpu().numpy() * 255
     target_np = target_palette.cpu().numpy() * 255
     
-    # Create figure with subplots
-    fig = plt.figure(figsize=(16, 10))
+    # Normalize for color mapping
+    source_colors = source_np / 255.0
+    output_colors = output_np / 255.0
+    target_colors = target_np / 255.0
     
-    # Subplot 1: Source colors in 3D RGB space
-    ax1 = fig.add_subplot(2, 3, 1, projection='3d')
-    ax1.scatter(source_np[:, 0], source_np[:, 1], source_np[:, 2], 
-               c=source_np/255.0, s=10, alpha=0.3, label='Source')
-    ax1.set_xlabel('R')
-    ax1.set_ylabel('G')
-    ax1.set_zlabel('B')
-    ax1.set_title('Source Color Distribution')
-    ax1.set_xlim([0, 255])
-    ax1.set_ylim([0, 255])
-    ax1.set_zlim([0, 255])
+    # Figure 1: Source colors in 3D RGB space
+    fig1 = go.Figure(
+        data=[
+            go.Scatter3d(
+                x=source_np[:, 0],
+                y=source_np[:, 1],
+                z=source_np[:, 2],
+                mode='markers',
+                marker=dict(
+                    size=3,
+                    color=source_colors,
+                    opacity=0.5
+                ),
+                name='Source Pixels'
+            )
+        ]
+    )
+    fig1.update_layout(
+        title='Source Color Distribution (3D RGB Space)',
+        scene=dict(
+            xaxis=dict(title='R', range=[0, 255]),
+            yaxis=dict(title='G', range=[0, 255]),
+            zaxis=dict(title='B', range=[0, 255])
+        ),
+        width=900,
+        height=800,
+        margin=dict(l=0, r=0, b=0, t=40)
+    )
+    fig1.show()
     
-    # Subplot 2: Target palette
-    ax2 = fig.add_subplot(2, 3, 2, projection='3d')
-    ax2.scatter(target_np[:, 0], target_np[:, 1], target_np[:, 2],
-               c=target_np/255.0, s=200, alpha=0.8, edgecolors='black', linewidth=2,
-               label='Target')
-    ax2.set_xlabel('R')
-    ax2.set_ylabel('G')
-    ax2.set_zlabel('B')
-    ax2.set_title('Target Palette')
-    ax2.set_xlim([0, 255])
-    ax2.set_ylim([0, 255])
-    ax2.set_zlim([0, 255])
+    # Figure 2: Target palette
+    fig2 = go.Figure(
+        data=[
+            go.Scatter3d(
+                x=target_np[:, 0],
+                y=target_np[:, 1],
+                z=target_np[:, 2],
+                mode='markers',
+                marker=dict(
+                    size=15,
+                    color=target_colors,
+                    line=dict(color='black', width=2),
+                    opacity=0.9
+                ),
+                text=[f"RGB({int(t[0])}, {int(t[1])}, {int(t[2])})" for t in target_np],
+                hoverinfo='text',
+                name='Target Palette'
+            )
+        ]
+    )
+    fig2.update_layout(
+        title='Target Color Palette (3D RGB Space)',
+        scene=dict(
+            xaxis=dict(title='R', range=[0, 255]),
+            yaxis=dict(title='G', range=[0, 255]),
+            zaxis=dict(title='B', range=[0, 255])
+        ),
+        width=900,
+        height=800,
+        margin=dict(l=0, r=0, b=0, t=40)
+    )
+    fig2.show()
     
-    # Subplot 3: Network output
-    ax3 = fig.add_subplot(2, 3, 3, projection='3d')
-    ax3.scatter(output_np[:, 0], output_np[:, 1], output_np[:, 2],
-               c=output_np/255.0, s=10, alpha=0.3, label='Output')
-    ax3.scatter(target_np[:, 0], target_np[:, 1], target_np[:, 2],
-               c=target_np/255.0, s=200, alpha=0.8, edgecolors='black', linewidth=2,
-               label='Target')
-    ax3.set_xlabel('R')
-    ax3.set_ylabel('G')
-    ax3.set_zlabel('B')
-    ax3.set_title('Network Output vs Target')
-    ax3.set_xlim([0, 255])
-    ax3.set_ylim([0, 255])
-    ax3.set_zlim([0, 255])
+    # Figure 3: Network output vs target
+    fig3 = go.Figure(
+        data=[
+            go.Scatter3d(
+                x=output_np[:, 0],
+                y=output_np[:, 1],
+                z=output_np[:, 2],
+                mode='markers',
+                marker=dict(
+                    size=3,
+                    color=output_colors,
+                    opacity=0.5
+                ),
+                name='Network Output'
+            ),
+            go.Scatter3d(
+                x=target_np[:, 0],
+                y=target_np[:, 1],
+                z=target_np[:, 2],
+                mode='markers',
+                marker=dict(
+                    size=15,
+                    color=target_colors,
+                    line=dict(color='black', width=2),
+                    opacity=0.9
+                ),
+                text=[f"RGB({int(t[0])}, {int(t[1])}, {int(t[2])})" for t in target_np],
+                hoverinfo='text',
+                name='Target Palette'
+            )
+        ]
+    )
+    fig3.update_layout(
+        title='Network Output vs Target Palette',
+        scene=dict(
+            xaxis=dict(title='R', range=[0, 255]),
+            yaxis=dict(title='G', range=[0, 255]),
+            zaxis=dict(title='B', range=[0, 255])
+        ),
+        width=900,
+        height=800,
+        margin=dict(l=0, r=0, b=0, t=40)
+    )
+    fig3.show()
     
-    # Subplot 4: Total loss
-    ax4 = fig.add_subplot(2, 3, 4)
-    ax4.plot(loss_history['total'], linewidth=2, label='Total Loss')
-    ax4.set_xlabel('Epoch')
-    ax4.set_ylabel('Loss')
-    ax4.set_title('Total Loss Over Training')
-    ax4.grid(True, alpha=0.3)
-    ax4.legend()
+    # Figure 4: Total loss
+    fig4 = go.Figure()
+    fig4.add_trace(
+        go.Scatter(
+            x=list(range(len(loss_history['total']))),
+            y=loss_history['total'],
+            mode='lines',
+            name='Total Loss',
+            line=dict(color='#1f77b4', width=3),
+            fill='tozeroy',
+            fillcolor='rgba(31, 119, 180, 0.2)'
+        )
+    )
+    fig4.update_layout(
+        title='Total Loss Over Training',
+        xaxis_title='Epoch',
+        yaxis_title='Loss',
+        hovermode='x unified',
+        width=900,
+        height=600,
+        margin=dict(l=60, r=40, b=60, t=40)
+    )
+    fig4.show()
     
-    # Subplot 5: Component losses
-    ax5 = fig.add_subplot(2, 3, 5)
-    ax5.plot(loss_history['histogram'], label='Histogram', alpha=0.7)
-    ax5.plot(loss_history['nearest_color'], label='Nearest Color', alpha=0.7)
-    ax5.plot(loss_history['smoothness'], label='Smoothness', alpha=0.7)
-    ax5.set_xlabel('Epoch')
-    ax5.set_ylabel('Loss')
-    ax5.set_title('Component Losses')
-    ax5.grid(True, alpha=0.3)
-    ax5.legend()
+    # Figure 5: Component losses
+    fig5 = go.Figure()
+    fig5.add_trace(
+        go.Scatter(
+            x=list(range(len(loss_history['histogram']))),
+            y=loss_history['histogram'],
+            mode='lines',
+            name='Histogram Loss',
+            line=dict(width=2.5),
+            opacity=0.8
+        )
+    )
+    fig5.add_trace(
+        go.Scatter(
+            x=list(range(len(loss_history['nearest_color']))),
+            y=loss_history['nearest_color'],
+            mode='lines',
+            name='Nearest Color Loss',
+            line=dict(width=2.5),
+            opacity=0.8
+        )
+    )
+    fig5.add_trace(
+        go.Scatter(
+            x=list(range(len(loss_history['smoothness']))),
+            y=loss_history['smoothness'],
+            mode='lines',
+            name='Smoothness Loss',
+            line=dict(width=2.5),
+            opacity=0.8
+        )
+    )
+    fig5.update_layout(
+        title='Component Losses During Training',
+        xaxis_title='Epoch',
+        yaxis_title='Loss',
+        hovermode='x unified',
+        width=900,
+        height=600,
+        margin=dict(l=60, r=40, b=60, t=40)
+    )
+    fig5.show()
     
-    # Subplot 6: Color mapping examples
-    ax6 = fig.add_subplot(2, 3, 6)
-    # Show a few example mappings
+    # Figure 6: Color mapping examples in R-G plane
+    fig6 = go.Figure()
+    
+    # Sample a few mappings to show
     sample_indices = np.random.choice(len(source_np), min(10, len(source_np)), replace=False)
+    
+    # Plot arrows as lines (source -> output)
     for idx in sample_indices:
-        src_color = source_np[idx] / 255.0
-        out_color = output_np[idx] / 255.0
-        # Draw arrow from source to output
-        ax6.arrow(src_color[0], src_color[1], 
-                 out_color[0] - src_color[0], out_color[1] - src_color[1],
-                 head_width=0.02, head_length=0.02, fc=out_color, ec='black', alpha=0.6)
+        src_color = source_np[idx]
+        out_color = output_np[idx]
+        
+        fig6.add_trace(
+            go.Scatter(
+                x=[src_color[0]/255.0, out_color[0]/255.0],
+                y=[src_color[1]/255.0, out_color[1]/255.0],
+                mode='lines+markers',
+                line=dict(color='rgba(100, 100, 100, 0.5)', width=2),
+                marker=dict(size=[6, 10], color=['gray', output_colors[idx]]),
+                hoverinfo='skip',
+                showlegend=False
+            )
+        )
     
-    # Plot target palette
-    for color in target_np / 255.0:
-        ax6.scatter(color[0], color[1], s=100, c=[color], edgecolors='black', linewidth=2)
+    # Plot target palette as larger points
+    fig6.add_trace(
+        go.Scatter(
+            x=target_colors[:, 0],
+            y=target_colors[:, 1],
+            mode='markers',
+            marker=dict(
+                size=15,
+                color=target_colors,
+                line=dict(color='black', width=2),
+                opacity=0.9
+            ),
+            text=[f"RGB({int(t[0])}, {int(t[1])}, {int(t[2])})" for t in target_np],
+            hoverinfo='text',
+            name='Target Palette'
+        )
+    )
     
-    ax6.set_xlim([0, 1])
-    ax6.set_ylim([0, 1])
-    ax6.set_xlabel('R')
-    ax6.set_ylabel('G')
-    ax6.set_title('Sample Color Mappings (R-G plane)')
-    ax6.grid(True, alpha=0.3)
+    fig6.update_layout(
+        title='Sample Color Mappings (R-G Plane)',
+        xaxis_title='R (Red)',
+        yaxis_title='G (Green)',
+        xaxis=dict(range=[-0.05, 1.05]),
+        yaxis=dict(range=[-0.05, 1.05]),
+        hovermode='closest',
+        width=900,
+        height=800,
+        margin=dict(l=60, r=40, b=60, t=40)
+    )
+    fig6.show()
     
-    plt.tight_layout()
-    
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"Saved visualization to: {save_path}")
-    
-    plt.show()
+    print("\nOpened 6 interactive Plotly visualization windows!")
+    print("Tip: Use the Plotly toolbar to zoom, pan, hover for details, and save figures as PNG.")
 
 
 def apply_cnn_to_triangulation(model, S, triangles, image_orig, device='cpu'):

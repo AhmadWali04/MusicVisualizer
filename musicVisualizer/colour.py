@@ -13,14 +13,14 @@ except ImportError:  # Plotly is optional; matplotlib remains as fallback
 def load_image_pixels(image_path):
     """
     Description:
-    In this case, we read the pixels and convert it into a 2D array of RGB values.
+        In this case, we read the pixels and convert it into a 2D array of RGB values.
     --------------
     Parameters:
-    image_path: Path to the image file
+        image_path: Path to the image file
     --------------
     Returns:
-    image_rgb: Image in RGB format
-    pixels: 2D array of shape (num_pixels, 3) with RGB values
+        image_rgb: Image in RGB format
+        pixels: 2D array of shape (num_pixels, 3) with RGB values
     """
     image = cv2.imread(image_path)
     if image is None:
@@ -47,14 +47,14 @@ def load_image_pixels(image_path):
 
 def convert_rgb_pixels_to_lab(pixels_rgb):
     """
-    Convert RGB pixel array to LAB color space.
-    
-    Args:
-        pixels_rgb: Array of shape (N, 3) with RGB values [0-255]
-    
+    Description:
+        Converts RGB pixels to LAB color space
+    --------------
+    Parameters:
+        pixels_rgb: Array of RGB pixel values (N, 3)
+    --------------
     Returns:
-        pixels_lab: Array of shape (N, 3) with LAB values
-    """
+        pixels_lab: Array of LAB pixel values (N, 3)"""
     # Reshape to image format for cv2
     h = int(np.sqrt(len(pixels_rgb)))
     w = len(pixels_rgb) // h
@@ -82,16 +82,16 @@ def convert_rgb_pixels_to_lab(pixels_rgb):
 def plot_rgb_cloud_interactive(pixels, title, max_points=50000):
     """
     Description:
-    This function creates a 3D scatter plot using Plotly to visualize 
-    the distribution of RGB pixel values in 3D space.
+        This function creates a 3D scatter plot using Plotly to visualize 
+        the distribution of RGB pixel values in 3D space.
     --------------
     Parameters:
-    pixels: Array of RGB pixel values (N, 3)
-    title: Plot title
-    max_points: Maximum number of points to plot (default: 50000)
+        pixels: Array of RGB pixel values (N, 3)
+        title: Plot title
+        max_points: Maximum number of points to plot (default: 50000)
     --------------
     Returns:
-    Nothing, but it shows the cloud of all the points plotted
+        Nothing, but it shows the cloud of all the points plotted
     """
     if go is None:
         raise RuntimeError("Plotly is not installed. Install it or use matplotlib plots.")
@@ -136,13 +136,17 @@ def plot_rgb_cloud_interactive(pixels, title, max_points=50000):
 
 def plot_lab_cloud_interactive(pixels_lab, pixels_rgb, title, max_points=50000):
     """
-    Plot LAB color space cloud with colors from original RGB values.
-    
-    Args:
+    Description:
+        Plot LAB color space cloud with colors from original RGB values.
+    --------------
+    Parameters:
         pixels_lab: Array of LAB pixel values (N, 3)
         pixels_rgb: Array of RGB pixel values (N, 3) for coloring
         title: Plot title
         max_points: Maximum number of points to plot
+    --------------
+    Returns:
+        Nothing, but it shows the cloud of all the points plotted
     """
     if go is None:
         raise RuntimeError("Plotly is not installed. Install it or use matplotlib plots.")
@@ -191,17 +195,17 @@ def plot_lab_cloud_interactive(pixels_lab, pixels_rgb, title, max_points=50000):
 def run_kmeans(pixels, num_clusters):
     """
     Description:
-    Running K-Means to find colours
+        Running K-Means to find colours
     -------------
     Parameters:
-    pixels : Array of RGB pixel data
-    num_clusters: a specification on the number of clusters we want
+        pixels : Array of RGB pixel data
+        num_clusters: a specification on the number of clusters we want
     -------------
     Returns
-    kmeans : Kmeans objects after fitting
-    centers: Cluster centers in RGB format (The coordinates of each cluster center)
-    labels: Labels assigned to each pixel (Which cluster each pixel belongs to)
-    percentages: A numpy array containing the percentage of each cluster (how much of the image it makes up)
+        kmeans : Kmeans objects after fitting
+        centers: Cluster centers in RGB format (The coordinates of each cluster center)
+        labels: Labels assigned to each pixel (Which cluster each pixel belongs to)
+        percentages: A numpy array containing the percentage of each cluster (how much of the image it makes up)
     -------------
     """
     kmeans = KMeans(n_clusters=num_clusters, n_init=10, random_state=42)
@@ -216,12 +220,13 @@ def run_kmeans(pixels, num_clusters):
 
 def run_kmeans_lab(pixels_lab, num_clusters=5):
     """
-    Run K-Means clustering in LAB color space.
-    
-    Args:
+    Description:
+        Run K-Means clustering in LAB color space.
+    --------------
+    Parameters:
         pixels_lab: Array of LAB pixel values
         num_clusters: Number of clusters
-    
+    --------------
     Returns:
         kmeans: KMeans object
         centers_lab: Cluster centers in LAB format
@@ -240,12 +245,16 @@ def run_kmeans_lab(pixels_lab, num_clusters=5):
 
 def plot_cluster_centers_lab_kmeans_interactive(centers_lab, percentages, centers_rgb):
     """
-    Plot LAB K-Means cluster centers colored by their RGB equivalents.
-    
-    Args:
+    Description:
+        Plot LAB K-Means cluster centers colored by their RGB equivalents.
+    --------------
+    Parameters:
         centers_lab: Cluster centers in LAB space
         percentages: Percentage distribution
         centers_rgb: Corresponding RGB values for coloring
+    --------------
+    Returns:
+        Nothing, but displays the plot for LAB cluster centers
     """
     if go is None:
         raise RuntimeError("Plotly is not installed. Install it or use matplotlib plots.")
@@ -288,14 +297,14 @@ def plot_cluster_centers_lab_kmeans_interactive(centers_lab, percentages, center
 def plot_cluster_centers_3d_interactive(centers, percentages):
     """
     Description:
-    Take the Kmeans data we just computed, and now we plot it
+        Plots RGB cluster centers in 3D space
     --------------
     Parameters:
-    centers: The coordinaes of each cluster object
-    percentages: The percentage of the total iamge that each colour is present it
+        centers: The coordinaes of each cluster object
+        percentages: The percentage of the total iamge that each colour is present it
     --------------
     Returns:
-    Nothing, but it displays the plot
+        Nothing, but it displays the plot
     """
     if go is None:
         raise RuntimeError("Plotly is not installed. Install it or use matplotlib plots.")
@@ -337,13 +346,13 @@ def plot_cluster_centers_3d_interactive(centers, percentages):
 def convert_rgb_centers_to_lab(centers):
     """
     Description:
-    Converts RGB scale to LAB scale
+        Converts RGB scale to LAB scale
     --------------
     Parameters:
-    centers: The RGB clusters
+        centers: The RGB clusters
     --------------
     Returns:
-    centers_lab: The RGB clusters but now in LAB
+        centers_lab: The RGB clusters but now in LAB
     """
     centers_rgb = centers.astype(np.uint8).reshape(1, -1, 3)
     centers_lab = cv2.cvtColor(centers_rgb, cv2.COLOR_RGB2LAB).reshape(-1, 3)
@@ -351,15 +360,16 @@ def convert_rgb_centers_to_lab(centers):
 
 def select_distinct_colors(centers, num_to_select):
     """
+    Description:
     Select distinct colors using Greedy Max-Min Distance algorithm in LAB space.
-    
-    Args
-        centers: RGB color centers from K-Means (shape: [n_clusters, 3])
+    --------------
+    Parameters:
+        center: The RGB color centers from K-Means 
         num_to_select: Number of distinct colors to select
-    
+    --------------
     Returns:
         selected_rgb: Selected colors in RGB format
-        selected_indices: Indices of selected colors in original centers array
+        np.array(selected_indices): Indices of selected colors in original centers array
     """
     # Convert to LAB space for perceptual distance
     centers_lab = convert_rgb_centers_to_lab(centers)
@@ -461,6 +471,18 @@ def select_distinct_colors_lab(centers_lab, centers_rgb, num_to_select=5):
 
 
 def plot_cluster_centers_lab_interactive(centers, percentages):
+    """
+    Descrition:
+    Plot
+    --------------
+    Parameters:
+    --------------
+
+    Returns:
+
+    :param centers: Description
+    :param percentages: Description
+    """
     if go is None:
         raise RuntimeError("Plotly is not installed. Install it or use matplotlib plots.")
 
@@ -545,28 +567,27 @@ def visualize_color_palette(centers, percentages, color_space):
 
 def get_palette_for_cnn(image_path, num_clusters=25, num_distinct=10, use_lab=True):
     """
-    Extract color palette optimized for CNN training.
-    
-    This is a convenience wrapper that combines existing functions
-    to produce exactly what CNN.py needs.
-    
-    Args:
+    Description:
+        Extract color palette optimized for CNN training.
+        This is a convenience wrapper that combines existing functions
+        to produce exactly what CNN.py needs.
+    --------------
+    Parameters::
         image_path: Path to palette/style image
         num_clusters: Number of K-Means clusters (default: 25)
         num_distinct: Number of distinct colors to select (default: 10)
         use_lab: If True, use LAB color space (recommended - default: True)
-    
+    --------------
     Returns:
         Tuple containing:
             - palette_rgb: numpy array (num_distinct, 3) - RGB colors [0-255]
             - palette_lab: numpy array (num_distinct, 3) - LAB colors
             - percentages: numpy array (num_distinct,) - percentage distribution
-    
-    Example:
-        palette_rgb, palette_lab, percentages = get_palette_for_cnn(
-            'vegetables.jpg', num_clusters=25, num_distinct=10
-        )
-        print(f"Extracted {len(palette_rgb)} distinct colors")
+        Example:
+            palette_rgb, palette_lab, percentages = get_palette_for_cnn(
+                'vegetables.jpg', num_clusters=25, num_distinct=10
+            )
+            print(f"Extracted {len(palette_rgb)} distinct colors")
     """
     print(f"\nExtracting palette from: {image_path}")
     

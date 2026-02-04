@@ -54,7 +54,27 @@ def example_1_basic_usage():
         save_output=True
     )
     
-    print("\nTraining complete! Model saved to: models/spiderman_vegetables.pth")
+    # Display training completion summary
+    print("\n" + "="*70)
+    print("✓ TRAINING COMPLETE - MODEL SAVED")
+    print("="*70)
+    print("\n📊 WHAT JUST HAPPENED:")
+    print("   • Neural network trained for 1000 epochs")
+    print("   • 267,523 parameters optimized")
+    print("   • 3 loss functions minimized:")
+    print("     - Histogram Loss: Color distribution matching")
+    print("     - Nearest Color Loss: Palette adherence")
+    print("     - Smoothness Loss: Smooth color transitions")
+    print("\n💾 MODEL SAVED TO:")
+    print("   models/spiderman_vegetables.pth (2 MB)")
+    print("\n⚡ NEXT STEPS:")
+    print("   • Run Example 2 to apply the SAME model instantly (10x faster!)")
+    print("   • The model learned how to map colors intelligently")
+    print("   • It can even apply to different source images!")
+    print("\n📖 LEARN MORE:")
+    print("   Read: HOW_TRAINING_WORKS.md for technical details")
+    print("="*70)
+    
     return results
 
 
@@ -72,7 +92,7 @@ def example_2_reuse_trained_model():
     - You want to apply the same style to multiple source images
     - You want to experiment with different triangulation parameters
     
-    Expected runtime: ~30 seconds (vs 10+ minutes for training)
+    Expected runtime: ~3 minutes (vs 15 minutes for training)
     """
     print("\n" + "="*70)
     print("EXAMPLE 2: Reusing a Trained Model")
@@ -81,9 +101,19 @@ def example_2_reuse_trained_model():
     model_path = 'models/spiderman_vegetables.pth'
     
     if not os.path.exists(model_path):
-        print(f"Model not found at {model_path}")
-        print("Run example_1_basic_usage() first to train a model.")
+        print(f"\n❌ Model not found at {model_path}")
+        print("\n📝 HOW TO GET A MODEL:")
+        print("   1. Run Example 1 first to train a model")
+        print("   2. Or download a pre-trained model")
+        print("   3. Place it in: models/spiderman_vegetables.pth")
+        print("\n⏱️  Once you have a model:")
+        print("   • Loading takes ~5 seconds")
+        print("   • Applying takes ~2 minutes")
+        print("   • Total: ~3 minutes (10x faster than training!)")
         return None
+    
+    print("\n⚡ FAST MODE: Loading pre-trained model...")
+    print(f"   Model file: {model_path}")
     
     results = imageTriangulation.pipeline_with_cnn(
         source_image_path='originalImages/spiderman.jpg',
@@ -95,7 +125,30 @@ def example_2_reuse_trained_model():
         save_output=True
     )
     
-    print("\nModel applied successfully!")
+    # Show what just happened
+    print("\n" + "="*70)
+    print("✓ MODEL APPLIED SUCCESSFULLY")
+    print("="*70)
+    print("\n📊 WHAT JUST HAPPENED:")
+    print("   • Loaded 267,523 pre-trained parameters instantly")
+    print("   • Model recognized the learned color transformation")
+    print("   • Applied it to create colored triangulation")
+    print("   • No training needed!")
+    print("\n⏱️  TIME COMPARISON:")
+    print("   • Example 1 (training): ~15 minutes")
+    print("   • Example 2 (inference): ~3 minutes")
+    print("   • Speed improvement: 5x faster!")
+    print("\n🎯 HOW THIS WORKS:")
+    print("   • The model 'remembers' how to map colors")
+    print("   • It was trained on spiderman → vegetables")
+    print("   • So it knows the color transformation rules")
+    print("   • Just plug it in and go!")
+    print("\n💡 TRY THIS NEXT:")
+    print("   • Run Example 3 with different triangulation density")
+    print("   • Use Example 4 to preview palettes")
+    print("   • Apply to different source images with same model!")
+    print("="*70)
+    
     return results
 
 

@@ -467,8 +467,9 @@ def pipeline_with_cnn(source_image_path, target_image_path,
         )
         results['cnn_result']['figure'].show()
     """
-    # Import CNN module
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    # Import CNN module - ensure path is added before import
+    if os.path.dirname(os.path.dirname(os.path.abspath(__file__))) not in sys.path:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     import CNN
     
     print("\n" + "="*60)
