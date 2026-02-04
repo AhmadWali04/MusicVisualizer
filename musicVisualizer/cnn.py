@@ -18,6 +18,8 @@ import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 import numpy as np
 import matplotlib.pyplot as plt
+plt.rcParams['font.sans-serif'] = ['Arial', 'Liberation Sans', 'DejaVu Sans', 'bitstream vera sans', 'sans-serif']
+plt.rcParams['font.family'] = 'sans-serif'
 from mpl_toolkits.mplot3d import Axes3D
 import sys
 import os
@@ -34,7 +36,7 @@ except ImportError:
 # Import our own modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import colour
-import form
+import tensorboard_feedback
 from PIL import Image
 import glob
 import re
@@ -44,56 +46,41 @@ import re
 # FEEDBACK UTILITIES
 # ============================================================================
 
-def load_previous_feedback(training_data_dir='trainingData'):
+def load_previous_feedback(feedback_dir='feedback_data'):
     """
-    Load all previous feedback from trainingData folder.
-    
+    Load all previous feedback from JSON files.
+
     Args:
-        training_data_dir: Path to trainingData folder
-    
+        feedback_dir: Directory containing feedback JSON files
+
     Returns:
         List of tuples: [(scores, weight), ...] where:
             - scores: [freq0..freq9, place0..place9]
             - weight: recency weight (more recent = higher weight)
-    
+
     Example:
         feedback_list = load_previous_feedback()
         # Returns: [([5,7,3,9,8,2,6,4,0,0,5,7,3,9,8,2,6,4,0,0], 1.0),
         #           ([8,3,7,2,6,5,1,9,4,7,8,3,7,2,6,5,1,9,4,7], 0.75), ...]
     """
-    if not os.path.exists(training_data_dir):
+    all_feedback = tensorboard_feedback.load_all_feedback(feedback_dir)
+
+    if not all_feedback:
         return []
-    
+
     feedback_list = []
-    image_files = sorted(glob.glob(os.path.join(training_data_dir, '*.png')))
-    
-    if not image_files:
-        return []
-    
-    # Extract scores from filenames
-    for i, filepath in enumerate(image_files):
-        filename = os.path.basename(filepath)
-        # Format: ABC_5739826400_5739826400.png
-        match = re.search(r'_(.+?)\.png$', filename)
-        if match:
-            score_str = match.group(1)
-            # Split by underscore to get frequency and placement
-            parts = score_str.split('_')
-            if len(parts) == 2:
-                freq_str, place_str = parts
-                try:
-                    freq_scores = [int(d) for d in freq_str]
-                    place_scores = [int(d) for d in place_str]
-                    scores = freq_scores + place_scores
-                    
-                    # Calculate recency weight: more recent = higher weight
-                    # Linear weight from 0.3 (oldest) to 1.0 (newest)
-                    recency = 0.3 + (i / max(1, len(image_files) - 1)) * 0.7
-                    
-                    feedback_list.append((scores, recency))
-                except (ValueError, IndexError):
-                    continue
-    
+
+    for i, session in enumerate(all_feedback):
+        freq_scores = session['frequency_scores']
+        place_scores = session['placement_scores']
+        scores = freq_scores + place_scores
+
+        # Calculate recency weight: more recent = higher weight
+        # Linear weight from 0.3 (oldest) to 1.0 (newest)
+        recency = 0.3 + (i / max(1, len(all_feedback) - 1)) * 0.7
+
+        feedback_list.append((scores, recency))
+
     return feedback_list
 
 
@@ -204,13 +191,14 @@ def compute_feedback_weighted_loss(model, source_pixels, target_palette,
     return feedback_weighted_loss
 
 
-def fine_tune_with_feedback(model, source_pixels, target_palette, 
+def fine_tune_with_feedback(model, source_pixels, target_palette,
                             source_pixels_lab, target_palette_lab,
                             epochs=150, batch_size=512, lr=0.0005,
-                            device='cpu', training_data_dir='trainingData'):
+                            device='cpu', feedback_dir='feedback_data',
+                            log_dir='runs/fine_tuning'):
     """
     Fine-tune model with feedback from previous training sessions.
-    
+
     Args:
         model: Previously trained ColorTransferNet
         source_pixels: Source pixels (N, 3), normalized [0,1]
@@ -221,52 +209,105 @@ def fine_tune_with_feedback(model, source_pixels, target_palette,
         batch_size: Batch size (default: 512)
         lr: Learning rate (default: 0.0005, lower than initial training)
         device: 'cpu' or 'cuda'
-        training_data_dir: Directory containing previous training data
-    
+        feedback_dir: Directory containing feedback JSON files
+        log_dir: TensorBoard log directory for fine-tuning visualization
+
     Returns:
         Tuple: (fine_tuned_model, loss_history)
     """
-    # Load previous feedback
-    feedback_list = load_previous_feedback(training_data_dir)
-    
+    from torch.utils.tensorboard import SummaryWriter
+
+    # Load previous feedback from JSON
+    feedback_list = load_previous_feedback(feedback_dir)
+
     if not feedback_list:
         print("\nNo previous feedback found. Skipping feedback fine-tuning.")
-        return model, {'feedback': []}
-    
+        return model, {'feedback': [], 'total': []}
+
+    # Create TensorBoard writer for fine-tuning
+    writer = SummaryWriter(log_dir)
+
     print("\n" + "="*70)
-    print("FINE-TUNING WITH FEEDBACK")
+    print("FINE-TUNING WITH FEEDBACK (TensorBoard Logging)")
     print("="*70)
-    print(f"Found {len(feedback_list)} previous training sessions")
+    print(f"Found {len(feedback_list)} previous sessions")
     print(f"Recent sessions weighted more heavily")
-    print(f"Fine-tuning for {epochs} epochs with adjusted learning rate {lr}")
+    print(f"Fine-tuning for {epochs} epochs with learning rate {lr}")
+    print(f"TensorBoard: tensorboard --logdir={log_dir}")
+    print(f"URL: http://localhost:6006")
     print("="*70)
-    
+
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    loss_history = {'feedback': []}
-    
+    loss_history = {'feedback': [], 'total': [], 'histogram': [], 'nearest': []}
+
+    # Initialize loss functions for auxiliary losses
+    histogram_loss_fn = ColorHistogramLoss(num_bins=16).to(device)
+    nearest_color_loss_fn = NearestColorDistanceLoss().to(device)
+
     print_progress_bar.start_time = time.time()
-    
+
     for epoch in range(epochs):
+        # Sample batch
+        if len(source_pixels) > batch_size:
+            indices = torch.randperm(len(source_pixels))[:batch_size]
+            batch = source_pixels[indices].to(device)
+        else:
+            batch = source_pixels.to(device)
+
+        # Forward pass
+        optimizer.zero_grad()
+        output = model(batch)
+
         # Compute feedback loss
         feedback_loss = compute_feedback_weighted_loss(
             model, source_pixels, target_palette,
             feedback_list, device=device, n_samples=1000
         )
-        
-        if feedback_loss.item() > 0:
-            # Backward pass
-            optimizer.zero_grad()
-            feedback_loss.backward()
+
+        # Also compute standard losses for reference
+        hist_loss = histogram_loss_fn(output, target_palette)
+        nearest_loss = nearest_color_loss_fn(output, target_palette)
+
+        # Total loss (weighted combination)
+        total_loss = feedback_loss + 0.3 * hist_loss + 0.2 * nearest_loss
+
+        # Backward pass
+        if total_loss.item() > 0:
+            total_loss.backward()
             optimizer.step()
-        
+
+        # Record losses
         loss_history['feedback'].append(feedback_loss.item())
-        
+        loss_history['total'].append(total_loss.item())
+        loss_history['histogram'].append(hist_loss.item())
+        loss_history['nearest'].append(nearest_loss.item())
+
+        # Log to TensorBoard
+        writer.add_scalar('Fine_Tuning/Feedback_Loss', feedback_loss.item(), epoch)
+        writer.add_scalar('Fine_Tuning/Histogram_Loss', hist_loss.item(), epoch)
+        writer.add_scalar('Fine_Tuning/Nearest_Color_Loss', nearest_loss.item(), epoch)
+        writer.add_scalar('Fine_Tuning/Total_Loss', total_loss.item(), epoch)
+
+        # Log sample outputs every 50 epochs
+        if epoch % 50 == 0 and epoch > 0:
+            with torch.no_grad():
+                sample_indices = torch.randperm(len(source_pixels))[:100]
+                sample_input = source_pixels[sample_indices].to(device)
+                sample_output = model(sample_input)
+
+                # Log color distribution
+                for i in range(3):
+                    writer.add_histogram(f'Fine_Tuning/Output_Channel_{i}',
+                                       sample_output[:, i].cpu(), epoch)
+
         # Progress bar
-        print_progress_bar(epoch + 1, epochs, 
-                          prefix=f'Fine-tuning (Feedback Loss: {feedback_loss.item():.6f})',
+        print_progress_bar(epoch + 1, epochs,
+                          prefix=f'Fine-tuning (Total Loss: {total_loss.item():.6f})',
                           length=40)
-    
+
+    writer.close()
     print("\n\n✓ Fine-tuning complete!")
+
     return model, loss_history
 
 
@@ -290,36 +331,41 @@ def generate_hex_prefix():
 
 def save_feedback_image(image, palette_rgb, scores, training_data_dir='trainingData'):
     """
-    Save colored image with feedback scores encoded in filename.
-    
+    DEPRECATED: Save colored image with feedback scores encoded in filename.
+
+    This function is deprecated. Feedback is now saved as JSON files by
+    tensorboard_feedback.py. This function remains for backward compatibility
+    but should not be used in new code.
+
     Args:
         image: PIL Image object (the colored triangulation)
         palette_rgb: numpy array (10, 3) - palette colors
         scores: list of 20 integers [freq0..freq9, place0..place9]
         training_data_dir: Directory to save to
-    
+
     Returns:
         str: Full path to saved image
-    
-    Example:
-        path = save_feedback_image(image_pil, palette_rgb, scores)
-        # Saves: trainingData/A1B_5739826400_5739826400.png
     """
+    print("\n⚠️  WARNING: save_feedback_image() is deprecated!")
+    print("   Feedback is now saved as JSON by tensorboard_feedback.py")
+    print("   This function will be removed in a future version.")
+
     # Create directory if needed
     os.makedirs(training_data_dir, exist_ok=True)
-    
+
     # Generate hex prefix and filename
     hex_prefix = generate_hex_prefix()
-    score_suffix = form.scores_to_filename_suffix(scores)
-    
+    score_suffix = tensorboard_feedback.scores_to_filename_suffix(scores)
+
     filename = f"{hex_prefix}_{score_suffix}.png"
     filepath = os.path.join(training_data_dir, filename)
-    
+
     # Save image
     image.save(filepath)
-    
-    print(f"\n✓ Feedback image saved: {filename}")
-    
+
+    print(f"\n✓ Image saved (legacy format): {filename}")
+    print(f"   Consider using TensorBoard feedback system instead")
+
     return filepath
 
 

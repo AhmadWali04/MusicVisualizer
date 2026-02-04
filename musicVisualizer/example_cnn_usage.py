@@ -16,13 +16,16 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from MusicVisualizer import imageTriangulation
+import imageTriangulation
 import colour
 import CNN
-import form
+import tensorboard_feedback
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
+plt.rcParams['font.sans-serif'] = ['Arial', 'Liberation Sans', 'DejaVu Sans', 'bitstream vera sans', 'sans-serif']
+plt.rcParams['font.family'] = 'sans-serif'
+from datetime import datetime
 
 
 def example_1_basic_usage():
@@ -68,45 +71,44 @@ def example_1_basic_usage():
         save_output=True
     )
     
-    # Extract palette for visualization and feedback form
+    # Extract palette for visualization and feedback
     print("\nExtracting palette for feedback...")
     palette_rgb, palette_lab, percentages = colour.get_palette_for_cnn(
         target_img, num_clusters=25, num_distinct=10
     )
-    
-    # Display LAB palette visualization
-    print("\n[STEP] Displaying LAB Palette Visualization...")
-    colour.plot_cluster_centers_lab_kmeans_interactive(
-        palette_lab, percentages, palette_rgb
-    )
-    
-    # Step 8: Show feedback form
-    print("\n" + "="*70)
-    print("FEEDBACK FORM: Rate Color Usage")
-    print("="*70)
-    print("\nTwo questions per color:")
-    print("  Q1: Frequency - Did I use this color enough?")
-    print("  Q2: Placement - Did I use it in the right places? (only if Q1 > 0)")
-    print("\nScale: 0 (bad) to 9 (excellent)")
-    print("="*70)
-    
-    scores = form.get_user_feedback(palette_rgb, palette_lab)
-    
-    # Step 9: Save image with feedback-encoded filename
-    print("\nSaving colored image with feedback...")
-    
-    # Get the CNN result figure as PIL Image
-    # We need to extract the image from the matplotlib figure
+
+    # Extract triangle colors for TensorBoard visualization
+    triangle_colors = results['cnn_result']['triangle_colors']  # numpy array (N, 3)
+
+    # Convert matplotlib figure to PIL Image for TensorBoard
     fig = results['cnn_result']['figure']
-    
-    # Convert matplotlib figure to PIL Image
     fig.canvas.draw()
-    image_data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-    image_data = image_data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-    colored_image = Image.fromarray(image_data)
-    
-    # Save with feedback-encoded filename
-    image_path = CNN.save_feedback_image(colored_image, palette_rgb, scores)
+
+    # Use np.asarray() to automatically handle reshaping
+    image_data = np.asarray(fig.canvas.buffer_rgba())
+    image_data = image_data[:, :, :3]  # Remove alpha channel, keep RGB
+    image_cnn = Image.fromarray(image_data)
+
+    # Load original image for comparison
+    image_original = Image.open(source_img)
+
+    # Step 8: Collect feedback via TensorBoard
+    print("\n" + "="*70)
+    print("TENSORBOARD FEEDBACK COLLECTION")
+    print("="*70)
+    print("\n📊 Starting TensorBoard visualization...")
+    print("   1. Open http://localhost:6006 in your browser")
+    print("   2. Review the visualizations")
+    print("   3. Return here to provide ratings")
+    print("="*70)
+
+    # Collect feedback using TensorBoard system
+    session_name = f'spiderman_vegetables_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+    scores = tensorboard_feedback.get_user_feedback_tensorboard(
+        palette_rgb, palette_lab, triangle_colors,
+        image_original, image_cnn,
+        session_name=session_name
+    )
     
     # Step 10: Fine-tune model with feedback
     print("\nFine-tuning model with feedback from all previous sessions...")
@@ -125,9 +127,11 @@ def example_1_basic_usage():
         data['source_pixels'], data['target_palette'],
         data['source_pixels_lab'], data['target_palette_lab'],
         epochs=150, batch_size=512, lr=0.0005,
-        device='cpu', training_data_dir='trainingData'
+        device='cpu',
+        feedback_dir='feedback_data',
+        log_dir='runs/fine_tuning'
     )
-    
+
     # Save fine-tuned model
     CNN.save_trained_model(
         model_ft,
@@ -139,10 +143,10 @@ def example_1_basic_usage():
             'num_distinct': 10,
             'training_epochs': 1000,
             'fine_tuned_epochs': 150,
-            'final_loss': loss_history_ft['feedback'][-1] if loss_history_ft['feedback'] else 0
+            'final_loss': loss_history_ft['total'][-1] if loss_history_ft['total'] else 0
         }
     )
-    
+
     # Display completion summary
     print("\n" + "="*70)
     print("✓ TRAINING & FEEDBACK CYCLE COMPLETE")
@@ -154,7 +158,8 @@ def example_1_basic_usage():
     print("   • 267,523 parameters optimized")
     print("\n💾 SAVED TO:")
     print(f"   Model: models/spiderman_vegetables.pth")
-    print(f"   Image: {image_path}")
+    print(f"   Feedback: feedback_data/{session_name}.json")
+    print(f"   TensorBoard: runs/feedback/{session_name}")
     print("\n🎯 HOW FEEDBACK WORKS:")
     print("   • Frequency: Model learns to use colors you rated low")
     print("   • Placement: Model learns better color placement")
@@ -163,6 +168,9 @@ def example_1_basic_usage():
     print("   • Run Example 1 again to incorporate more feedback")
     print("   • Run Example 2 to apply model without retraining")
     print("   • Use Example 3 for different triangulation density")
+    print("\n📊 TENSORBOARD:")
+    print("   • View training progress: tensorboard --logdir=runs")
+    print("   • Compare sessions in browser at http://localhost:6006")
     print("="*70)
     
     return results
@@ -188,12 +196,12 @@ def example_2_reuse_trained_model():
     model_path = 'models/spiderman_vegetables.pth'
     
     if not os.path.exists(model_path):
-        print(f"\n❌ Model not found at {model_path}")
-        print("\n📝 HOW TO GET A MODEL:")
+        print(f"\n Model not found at {model_path}")
+        print("\n HOW TO GET A MODEL:")
         print("   1. Run Example 1 first to train a model")
         print("   2. Or download a pre-trained model")
         print("   3. Place it in: models/spiderman_vegetables.pth")
-        print("\n⏱️  Once you have a model:")
+        print("\n  Once you have a model:")
         print("   • Loading takes ~5 seconds")
         print("   • Applying takes ~2 minutes")
         print("   • Feedback: ~3 minutes")
@@ -221,49 +229,56 @@ def example_2_reuse_trained_model():
     palette_rgb, palette_lab, percentages = colour.get_palette_for_cnn(
         target_img, num_clusters=25, num_distinct=10
     )
-    
-    # Display LAB palette
-    print("\n[STEP] Displaying LAB Palette Visualization...")
-    colour.plot_cluster_centers_lab_kmeans_interactive(
-        palette_lab, percentages, palette_rgb
-    )
-    
-    # Collect feedback
-    print("\n" + "="*70)
-    print("FEEDBACK FORM: Rate Color Usage")
-    print("="*70)
-    print("\nRating this attempt to help the model improve!")
-    print("="*70)
-    
-    scores = form.get_user_feedback(palette_rgb, palette_lab)
-    
-    # Save image with feedback
+
+    # Extract triangle colors for TensorBoard
+    triangle_colors = results['cnn_result']['triangle_colors']
+
+    # Convert matplotlib figure to PIL Image
     fig = results['cnn_result']['figure']
     fig.canvas.draw()
-    image_data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-    image_data = image_data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-    colored_image = Image.fromarray(image_data)
-    
-    image_path = CNN.save_feedback_image(colored_image, palette_rgb, scores)
-    
+
+    # Use np.asarray() to automatically handle reshaping
+    image_data = np.asarray(fig.canvas.buffer_rgba())
+    image_data = image_data[:, :, :3]  # Remove alpha channel, keep RGB
+    image_cnn = Image.fromarray(image_data)
+
+    # Load original image
+    image_original = Image.open(source_img)
+
+    # Collect feedback via TensorBoard
+    print("\n" + "="*70)
+    print("TENSORBOARD FEEDBACK COLLECTION")
+    print("="*70)
+    print("\n📊 Review the TensorBoard dashboard, then provide ratings")
+    print("="*70)
+
+    session_name = f'spiderman_vegetables_reuse_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+    scores = tensorboard_feedback.get_user_feedback_tensorboard(
+        palette_rgb, palette_lab, triangle_colors,
+        image_original, image_cnn,
+        session_name=session_name
+    )
+
     # Fine-tune model with feedback
     print("\nFine-tuning model with feedback from all previous sessions...")
-    
+
     data = CNN.prepare_training_data(
         source_img, target_img,
         num_clusters=25, num_distinct=10,
         use_lab=True, device='cpu'
     )
-    
+
     model = results['model']
     model_ft, loss_history_ft = CNN.fine_tune_with_feedback(
         model,
         data['source_pixels'], data['target_palette'],
         data['source_pixels_lab'], data['target_palette_lab'],
         epochs=150, batch_size=512, lr=0.0005,
-        device='cpu', training_data_dir='trainingData'
+        device='cpu',
+        feedback_dir='feedback_data',
+        log_dir='runs/fine_tuning'
     )
-    
+
     # Save fine-tuned model
     CNN.save_trained_model(
         model_ft,
@@ -274,10 +289,10 @@ def example_2_reuse_trained_model():
             'num_clusters': 25,
             'num_distinct': 10,
             'fine_tuned_epochs': 150,
-            'final_loss': loss_history_ft['feedback'][-1] if loss_history_ft['feedback'] else 0
+            'final_loss': loss_history_ft['total'][-1] if loss_history_ft['total'] else 0
         }
     )
-    
+
     # Show what just happened
     print("\n" + "="*70)
     print("✓ MODEL APPLIED & FINE-TUNED SUCCESSFULLY")
@@ -298,6 +313,9 @@ def example_2_reuse_trained_model():
     print("\n💡 NEXT TIME:")
     print("   • Run Example 1 or 2 again for more feedback cycles")
     print("   • Model gets smarter with each feedback loop")
+    print("\n📊 TENSORBOARD:")
+    print("   • View all sessions: tensorboard --logdir=runs")
+    print("   • Browser: http://localhost:6006")
     print("="*70)
     
     return results
