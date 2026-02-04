@@ -132,7 +132,7 @@ class TensorBoardFeedbackSystem:
         # Convert to numpy array for TensorBoard
         fig.canvas.draw()
         image = np.frombuffer(fig.canvas.tostring_argb(), dtype=np.uint8)
-        image - np.asarray(fig.canvas.buffer_rgba())
+        image = np.asarray(fig.canvas.buffer_rgba())
         #image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
         plt.close(fig)
 
@@ -226,7 +226,8 @@ class TensorBoardFeedbackSystem:
         # Convert to image
         fig.canvas.draw()
         image = np.frombuffer(fig.canvas.tostring_argb(), dtype=np.uint8)
-        image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        image = np.asarray(fig.canvas.buffer_rgba())
+        #image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
         plt.close(fig)
 
         self.writer.add_image('3D_Distribution/RGB_Space', image, 0, dataformats='HWC')
@@ -278,8 +279,9 @@ class TensorBoardFeedbackSystem:
 
         # Convert to image
         fig.canvas.draw()
-        image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-        image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        image = np.frombuffer(fig.canvas.tostring_argb(), dtype=np.uint8)
+        image = np.asarray(fig.canvas.buffer_rgba())
+        #image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
         plt.close(fig)
 
         self.writer.add_image('Usage_Heatmap/Spatial_Distribution', image, 0, dataformats='HWC')

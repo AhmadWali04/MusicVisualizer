@@ -1074,13 +1074,18 @@ def visualize_training_progress(model, source_pixels, target_palette,
         src_color = source_np[idx]
         out_color = output_np[idx]
         
+        # Format colors as RGB strings for Plotly
+        src_color_str = f'rgb({int(src_color[0])}, {int(src_color[1])}, {int(src_color[2])})'
+        out_color_str = output_colors[idx]
+        
         fig6.add_trace(
             go.Scatter(
                 x=[src_color[0]/255.0, out_color[0]/255.0],
                 y=[src_color[1]/255.0, out_color[1]/255.0],
                 mode='lines+markers',
                 line=dict(color='rgba(100, 100, 100, 0.5)', width=2),
-                marker=dict(size=[6, 10], color=['gray', output_colors[idx]]),
+                marker=dict(size=[10, 10], color=[src_color_str, out_color_str], 
+                           line=dict(color='black', width=1)),
                 hoverinfo='skip',
                 showlegend=False
             )
