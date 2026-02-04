@@ -34,7 +34,293 @@ except ImportError:
 # Import our own modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import colour
+import form
 from PIL import Image
+import glob
+import re
+
+
+# ============================================================================
+# FEEDBACK UTILITIES
+# ============================================================================
+
+def load_previous_feedback(training_data_dir='trainingData'):
+    """
+    Load all previous feedback from trainingData folder.
+    
+    Args:
+        training_data_dir: Path to trainingData folder
+    
+    Returns:
+        List of tuples: [(scores, weight), ...] where:
+            - scores: [freq0..freq9, place0..place9]
+            - weight: recency weight (more recent = higher weight)
+    
+    Example:
+        feedback_list = load_previous_feedback()
+        # Returns: [([5,7,3,9,8,2,6,4,0,0,5,7,3,9,8,2,6,4,0,0], 1.0),
+        #           ([8,3,7,2,6,5,1,9,4,7,8,3,7,2,6,5,1,9,4,7], 0.75), ...]
+    """
+    if not os.path.exists(training_data_dir):
+        return []
+    
+    feedback_list = []
+    image_files = sorted(glob.glob(os.path.join(training_data_dir, '*.png')))
+    
+    if not image_files:
+        return []
+    
+    # Extract scores from filenames
+    for i, filepath in enumerate(image_files):
+        filename = os.path.basename(filepath)
+        # Format: ABC_5739826400_5739826400.png
+        match = re.search(r'_(.+?)\.png$', filename)
+        if match:
+            score_str = match.group(1)
+            # Split by underscore to get frequency and placement
+            parts = score_str.split('_')
+            if len(parts) == 2:
+                freq_str, place_str = parts
+                try:
+                    freq_scores = [int(d) for d in freq_str]
+                    place_scores = [int(d) for d in place_str]
+                    scores = freq_scores + place_scores
+                    
+                    # Calculate recency weight: more recent = higher weight
+                    # Linear weight from 0.3 (oldest) to 1.0 (newest)
+                    recency = 0.3 + (i / max(1, len(image_files) - 1)) * 0.7
+                    
+                    feedback_list.append((scores, recency))
+                except (ValueError, IndexError):
+                    continue
+    
+    return feedback_list
+
+
+def compute_feedback_weighted_loss(model, source_pixels, target_palette,
+                                   feedback_list, device='cpu', n_samples=1000):
+    """
+    Compute loss that incorporates user feedback.
+    
+    The loss penalizes:
+    1. Not using colors enough (frequency feedback)
+    2. Using colors in wrong places (placement feedback)
+    
+    Args:
+        model: ColorTransferNet
+        source_pixels: Source image pixels (N, 3), normalized [0,1]
+        target_palette: Target palette (10, 3), normalized [0,1]
+        feedback_list: List of (scores, weight) tuples from load_previous_feedback()
+        device: 'cpu' or 'cuda'
+        n_samples: Number of pixels to sample
+    
+    Returns:
+        loss: Scalar tensor incorporating feedback
+    """
+    if not feedback_list:
+        # No feedback yet, return 0
+        return torch.tensor(0.0, device=device)
+    
+    # Average feedback scores, weighted by recency
+    total_weight = sum(weight for _, weight in feedback_list)
+    avg_freq_scores = np.zeros(10)
+    avg_place_scores = np.zeros(10)
+    
+    for scores, weight in feedback_list:
+        freq_scores = np.array(scores[:10], dtype=np.float32)
+        place_scores = np.array(scores[10:20], dtype=np.float32)
+        avg_freq_scores += freq_scores * weight
+        avg_place_scores += place_scores * weight
+    
+    avg_freq_scores /= total_weight
+    avg_place_scores /= total_weight
+    
+    # Sample pixels and get network output
+    if len(source_pixels) > n_samples:
+        indices = np.random.choice(len(source_pixels), n_samples, replace=False)
+        sampled_pixels = source_pixels[indices]
+    else:
+        sampled_pixels = source_pixels
+    
+    model.eval()
+    with torch.no_grad():
+        network_output = model(sampled_pixels)  # (N, 3)
+    
+    # Denormalize to [0, 255] for comparison
+    output_colors_255 = network_output * 255.0
+    palette_255 = target_palette * 255.0
+    
+    # ========== FREQUENCY LOSS ==========
+    # For each color in palette, check if network output includes it
+    frequency_loss = 0.0
+    
+    for color_idx in range(10):
+        target_color = palette_255[color_idx:color_idx+1]  # (1, 3)
+        
+        # Find closest network output to this palette color
+        distances = torch.norm(output_colors_255 - target_color, dim=1)  # (N,)
+        closest_dist = torch.min(distances)
+        
+        # Frequency feedback: 0 = want more, 9 = want less
+        freq_score = avg_freq_scores[color_idx]  # 0-9
+        # Convert to penalty: 0 (don't use) -> high penalty, 9 (use more) -> low penalty
+        # Invert: higher score = lower penalty
+        freq_penalty_weight = (9 - freq_score) / 9.0  # 1.0 (use more) to 0.0 (don't use)
+        
+        # Penalize if network isn't using this color
+        frequency_loss += freq_penalty_weight * closest_dist
+    
+    frequency_loss /= 10.0
+    
+    # ========== PLACEMENT LOSS ==========
+    # Check if colors are used in appropriate places based on source
+    placement_loss = 0.0
+    
+    for color_idx in range(10):
+        placement_score = avg_place_scores[color_idx]  # 0-9
+        
+        if placement_score == 0:
+            # User said placement is wrong, penalize network output variance for this color
+            continue
+        
+        # Placement feedback: 0 = wrong places, 9 = excellent
+        # Higher score = network is doing better, so lower penalty
+        place_penalty_weight = (9 - placement_score) / 9.0  # 1.0 (wrong) to 0.0 (excellent)
+        
+        # For each output pixel, check if it's close to palette
+        target_color = palette_255[color_idx:color_idx+1]
+        distances = torch.norm(output_colors_255 - target_color, dim=1)
+        
+        # Smooth distance: if already using this color, penalize inconsistency
+        # This encourages coherent placement
+        placement_loss += place_penalty_weight * torch.std(distances)
+    
+    placement_loss /= 10.0
+    
+    # ========== COMBINED FEEDBACK LOSS ==========
+    # Frequency has more weight (user's main concern)
+    feedback_weighted_loss = 0.7 * frequency_loss + 0.3 * placement_loss
+    
+    return feedback_weighted_loss
+
+
+def fine_tune_with_feedback(model, source_pixels, target_palette, 
+                            source_pixels_lab, target_palette_lab,
+                            epochs=150, batch_size=512, lr=0.0005,
+                            device='cpu', training_data_dir='trainingData'):
+    """
+    Fine-tune model with feedback from previous training sessions.
+    
+    Args:
+        model: Previously trained ColorTransferNet
+        source_pixels: Source pixels (N, 3), normalized [0,1]
+        target_palette: Target palette (10, 3), normalized [0,1]
+        source_pixels_lab: Source in LAB space
+        target_palette_lab: Target in LAB space
+        epochs: Number of fine-tuning epochs (default: 150)
+        batch_size: Batch size (default: 512)
+        lr: Learning rate (default: 0.0005, lower than initial training)
+        device: 'cpu' or 'cuda'
+        training_data_dir: Directory containing previous training data
+    
+    Returns:
+        Tuple: (fine_tuned_model, loss_history)
+    """
+    # Load previous feedback
+    feedback_list = load_previous_feedback(training_data_dir)
+    
+    if not feedback_list:
+        print("\nNo previous feedback found. Skipping feedback fine-tuning.")
+        return model, {'feedback': []}
+    
+    print("\n" + "="*70)
+    print("FINE-TUNING WITH FEEDBACK")
+    print("="*70)
+    print(f"Found {len(feedback_list)} previous training sessions")
+    print(f"Recent sessions weighted more heavily")
+    print(f"Fine-tuning for {epochs} epochs with adjusted learning rate {lr}")
+    print("="*70)
+    
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    loss_history = {'feedback': []}
+    
+    print_progress_bar.start_time = time.time()
+    
+    for epoch in range(epochs):
+        # Compute feedback loss
+        feedback_loss = compute_feedback_weighted_loss(
+            model, source_pixels, target_palette,
+            feedback_list, device=device, n_samples=1000
+        )
+        
+        if feedback_loss.item() > 0:
+            # Backward pass
+            optimizer.zero_grad()
+            feedback_loss.backward()
+            optimizer.step()
+        
+        loss_history['feedback'].append(feedback_loss.item())
+        
+        # Progress bar
+        print_progress_bar(epoch + 1, epochs, 
+                          prefix=f'Fine-tuning (Feedback Loss: {feedback_loss.item():.6f})',
+                          length=40)
+    
+    print("\n\n✓ Fine-tuning complete!")
+    return model, loss_history
+
+
+def generate_hex_prefix():
+    """
+    Generate a hex prefix for saved images.
+    
+    Returns:
+        str: 3-character hex prefix (000-FFF, representing 0-4095)
+    """
+    # Count existing images in trainingData folder
+    if os.path.exists('trainingData'):
+        existing = len(glob.glob('trainingData/*.png'))
+    else:
+        existing = 0
+    
+    # Convert to hex (0-FFF range)
+    hex_value = hex(existing % 4096)[2:].upper().zfill(3)
+    return hex_value
+
+
+def save_feedback_image(image, palette_rgb, scores, training_data_dir='trainingData'):
+    """
+    Save colored image with feedback scores encoded in filename.
+    
+    Args:
+        image: PIL Image object (the colored triangulation)
+        palette_rgb: numpy array (10, 3) - palette colors
+        scores: list of 20 integers [freq0..freq9, place0..place9]
+        training_data_dir: Directory to save to
+    
+    Returns:
+        str: Full path to saved image
+    
+    Example:
+        path = save_feedback_image(image_pil, palette_rgb, scores)
+        # Saves: trainingData/A1B_5739826400_5739826400.png
+    """
+    # Create directory if needed
+    os.makedirs(training_data_dir, exist_ok=True)
+    
+    # Generate hex prefix and filename
+    hex_prefix = generate_hex_prefix()
+    score_suffix = form.scores_to_filename_suffix(scores)
+    
+    filename = f"{hex_prefix}_{score_suffix}.png"
+    filepath = os.path.join(training_data_dir, filename)
+    
+    # Save image
+    image.save(filepath)
+    
+    print(f"\n✓ Feedback image saved: {filename}")
+    
+    return filepath
 
 
 def print_progress_bar(iteration, total, prefix='', length=50, decimals=1):

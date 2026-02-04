@@ -19,31 +19,45 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from MusicVisualizer import imageTriangulation
 import colour
 import CNN
+import form
+import numpy as np
+from PIL import Image
+import matplotlib.pyplot as plt
 
 
 def example_1_basic_usage():
     """
-    Basic usage: triangulate spiderman, apply vegetables palette using CNN.
+    Basic usage with FEEDBACK LOOP: triangulate, train, apply, rate, and fine-tune.
     
-    This example:
+    Complete workflow:
     1. Loads spiderman.jpg and detects edges
     2. Performs Delaunay triangulation
     3. Extracts color palette from vegetables.jpg
-    4. Trains a CNN to map colors
-    5. Applies CNN to paint each triangle
-    6. Displays the result
+    4. Displays interactive LAB palette visualization
+    5. Trains a CNN to map colors (1000 epochs)
+    6. Applies CNN to paint each triangle
+    7. Shows colored result
+    8. Displays feedback form (rate frequency and placement of each color)
+    9. Saves image to trainingData/ with feedback-encoded filename
+    10. Fine-tunes model with all previous feedback (150 epochs)
     
     Expected output:
     - Triangulated image with colors from vegetables palette
-    - Colors are more harmonious than simple nearest-neighbor matching
+    - Interactive feedback form for rating color usage
+    - Fine-tuned model incorporating your feedback
     """
     print("\n" + "="*70)
-    print("EXAMPLE 1: Basic CNN Color Transfer")
+    print("EXAMPLE 1: CNN Color Transfer with Feedback Loop")
     print("="*70)
     
+    source_img = 'originalImages/spiderman.jpg'
+    target_img = 'originalImages/vegetables.jpg' if os.path.exists('originalImages/vegetables.jpg') else 'hybridTheory.jpeg'
+    
+    # Step 1-7: Run pipeline (triangulate, train, apply)
+    print("\nRunning CNN color transfer pipeline...")
     results = imageTriangulation.pipeline_with_cnn(
-        source_image_path='originalImages/spiderman.jpg',
-        target_image_path='originalImages/vegetables.jpg' if os.path.exists('originalImages/vegetables.jpg') else 'hybridTheory.jpeg',
+        source_image_path=source_img,
+        target_image_path=target_img,
         threshold=50,
         density_reduction=60,
         num_clusters=25,
@@ -54,25 +68,101 @@ def example_1_basic_usage():
         save_output=True
     )
     
-    # Display training completion summary
+    # Extract palette for visualization and feedback form
+    print("\nExtracting palette for feedback...")
+    palette_rgb, palette_lab, percentages = colour.get_palette_for_cnn(
+        target_img, num_clusters=25, num_distinct=10
+    )
+    
+    # Display LAB palette visualization
+    print("\n[STEP] Displaying LAB Palette Visualization...")
+    colour.plot_cluster_centers_lab_kmeans_interactive(
+        palette_lab, percentages, palette_rgb
+    )
+    
+    # Step 8: Show feedback form
     print("\n" + "="*70)
-    print("✓ TRAINING COMPLETE - MODEL SAVED")
+    print("FEEDBACK FORM: Rate Color Usage")
+    print("="*70)
+    print("\nTwo questions per color:")
+    print("  Q1: Frequency - Did I use this color enough?")
+    print("  Q2: Placement - Did I use it in the right places? (only if Q1 > 0)")
+    print("\nScale: 0 (bad) to 9 (excellent)")
+    print("="*70)
+    
+    scores = form.get_user_feedback(palette_rgb, palette_lab)
+    
+    # Step 9: Save image with feedback-encoded filename
+    print("\nSaving colored image with feedback...")
+    
+    # Get the CNN result figure as PIL Image
+    # We need to extract the image from the matplotlib figure
+    fig = results['cnn_result']['figure']
+    
+    # Convert matplotlib figure to PIL Image
+    fig.canvas.draw()
+    image_data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    image_data = image_data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    colored_image = Image.fromarray(image_data)
+    
+    # Save with feedback-encoded filename
+    image_path = CNN.save_feedback_image(colored_image, palette_rgb, scores)
+    
+    # Step 10: Fine-tune model with feedback
+    print("\nFine-tuning model with feedback from all previous sessions...")
+    
+    # Prepare data for fine-tuning
+    data = CNN.prepare_training_data(
+        source_img, target_img,
+        num_clusters=25, num_distinct=10,
+        use_lab=True, device='cpu'
+    )
+    
+    # Fine-tune with feedback
+    model = results['model']
+    model_ft, loss_history_ft = CNN.fine_tune_with_feedback(
+        model,
+        data['source_pixels'], data['target_palette'],
+        data['source_pixels_lab'], data['target_palette_lab'],
+        epochs=150, batch_size=512, lr=0.0005,
+        device='cpu', training_data_dir='trainingData'
+    )
+    
+    # Save fine-tuned model
+    CNN.save_trained_model(
+        model_ft,
+        'models/spiderman_vegetables.pth',
+        metadata={
+            'source_image': source_img,
+            'target_image': target_img,
+            'num_clusters': 25,
+            'num_distinct': 10,
+            'training_epochs': 1000,
+            'fine_tuned_epochs': 150,
+            'final_loss': loss_history_ft['feedback'][-1] if loss_history_ft['feedback'] else 0
+        }
+    )
+    
+    # Display completion summary
+    print("\n" + "="*70)
+    print("✓ TRAINING & FEEDBACK CYCLE COMPLETE")
     print("="*70)
     print("\n📊 WHAT JUST HAPPENED:")
-    print("   • Neural network trained for 1000 epochs")
+    print("   • Initial training: 1000 epochs (CNN learned color mapping)")
+    print("   • Your feedback: Frequency and placement ratings for 10 colors")
+    print("   • Fine-tuning: 150 epochs (model adapted to your feedback)")
     print("   • 267,523 parameters optimized")
-    print("   • 3 loss functions minimized:")
-    print("     - Histogram Loss: Color distribution matching")
-    print("     - Nearest Color Loss: Palette adherence")
-    print("     - Smoothness Loss: Smooth color transitions")
-    print("\n💾 MODEL SAVED TO:")
-    print("   models/spiderman_vegetables.pth (2 MB)")
+    print("\n💾 SAVED TO:")
+    print(f"   Model: models/spiderman_vegetables.pth")
+    print(f"   Image: {image_path}")
+    print("\n🎯 HOW FEEDBACK WORKS:")
+    print("   • Frequency: Model learns to use colors you rated low")
+    print("   • Placement: Model learns better color placement")
+    print("   • Recent sessions weighted more heavily")
     print("\n⚡ NEXT STEPS:")
-    print("   • Run Example 2 to apply the SAME model instantly (10x faster!)")
-    print("   • The model learned how to map colors intelligently")
-    print("   • It can even apply to different source images!")
-    print("\n📖 LEARN MORE:")
-    print("   Read: HOW_TRAINING_WORKS.md for technical details")
+    print("   • Run Example 1 again to incorporate more feedback")
+    print("   • Run Example 2 to apply model without retraining")
+    print("   • Use Example 3 for different triangulation density")
     print("="*70)
     
     return results
@@ -80,22 +170,19 @@ def example_1_basic_usage():
 
 def example_2_reuse_trained_model():
     """
-    Reuse a previously trained model (much faster than retraining).
+    Reuse a trained model with FEEDBACK LOOP (faster than Example 1).
     
     This example demonstrates:
     1. Loading a pre-trained model from disk
-    2. Applying it to the same source image with the same target
-    3. Quick inference without the training step
+    2. Applying it to triangulation without retraining
+    3. Collecting feedback on color usage
+    4. Fine-tuning model with feedback (150 epochs)
     
-    This is useful when:
-    - You've already trained a model and want to apply it again
-    - You want to apply the same style to multiple source images
-    - You want to experiment with different triangulation parameters
-    
-    Expected runtime: ~3 minutes (vs 15 minutes for training)
+    This is much faster than Example 1 because we skip the initial 1000-epoch training.
+    Expected runtime: ~5 minutes (vs 15 minutes for Example 1)
     """
     print("\n" + "="*70)
-    print("EXAMPLE 2: Reusing a Trained Model")
+    print("EXAMPLE 2: Reusing Trained Model with Feedback")
     print("="*70)
     
     model_path = 'models/spiderman_vegetables.pth'
@@ -109,15 +196,20 @@ def example_2_reuse_trained_model():
         print("\n⏱️  Once you have a model:")
         print("   • Loading takes ~5 seconds")
         print("   • Applying takes ~2 minutes")
-        print("   • Total: ~3 minutes (10x faster than training!)")
+        print("   • Feedback: ~3 minutes")
+        print("   • Total: ~5 minutes (3x faster than training!)")
         return None
     
     print("\n⚡ FAST MODE: Loading pre-trained model...")
     print(f"   Model file: {model_path}")
     
+    source_img = 'originalImages/spiderman.jpg'
+    target_img = 'originalImages/vegetables.jpg' if os.path.exists('originalImages/vegetables.jpg') else 'hybridTheory.jpeg'
+    
+    # Apply pre-trained model (no training step)
     results = imageTriangulation.pipeline_with_cnn(
-        source_image_path='originalImages/spiderman.jpg',
-        target_image_path='originalImages/vegetables.jpg' if os.path.exists('originalImages/vegetables.jpg') else 'hybridTheory.jpeg',
+        source_image_path=source_img,
+        target_image_path=target_img,
         use_pretrained_model=model_path,
         threshold=50,
         density_reduction=60,
@@ -125,28 +217,87 @@ def example_2_reuse_trained_model():
         save_output=True
     )
     
+    # Extract palette for visualization and feedback
+    palette_rgb, palette_lab, percentages = colour.get_palette_for_cnn(
+        target_img, num_clusters=25, num_distinct=10
+    )
+    
+    # Display LAB palette
+    print("\n[STEP] Displaying LAB Palette Visualization...")
+    colour.plot_cluster_centers_lab_kmeans_interactive(
+        palette_lab, percentages, palette_rgb
+    )
+    
+    # Collect feedback
+    print("\n" + "="*70)
+    print("FEEDBACK FORM: Rate Color Usage")
+    print("="*70)
+    print("\nRating this attempt to help the model improve!")
+    print("="*70)
+    
+    scores = form.get_user_feedback(palette_rgb, palette_lab)
+    
+    # Save image with feedback
+    fig = results['cnn_result']['figure']
+    fig.canvas.draw()
+    image_data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    image_data = image_data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    colored_image = Image.fromarray(image_data)
+    
+    image_path = CNN.save_feedback_image(colored_image, palette_rgb, scores)
+    
+    # Fine-tune model with feedback
+    print("\nFine-tuning model with feedback from all previous sessions...")
+    
+    data = CNN.prepare_training_data(
+        source_img, target_img,
+        num_clusters=25, num_distinct=10,
+        use_lab=True, device='cpu'
+    )
+    
+    model = results['model']
+    model_ft, loss_history_ft = CNN.fine_tune_with_feedback(
+        model,
+        data['source_pixels'], data['target_palette'],
+        data['source_pixels_lab'], data['target_palette_lab'],
+        epochs=150, batch_size=512, lr=0.0005,
+        device='cpu', training_data_dir='trainingData'
+    )
+    
+    # Save fine-tuned model
+    CNN.save_trained_model(
+        model_ft,
+        model_path,
+        metadata={
+            'source_image': source_img,
+            'target_image': target_img,
+            'num_clusters': 25,
+            'num_distinct': 10,
+            'fine_tuned_epochs': 150,
+            'final_loss': loss_history_ft['feedback'][-1] if loss_history_ft['feedback'] else 0
+        }
+    )
+    
     # Show what just happened
     print("\n" + "="*70)
-    print("✓ MODEL APPLIED SUCCESSFULLY")
+    print("✓ MODEL APPLIED & FINE-TUNED SUCCESSFULLY")
     print("="*70)
     print("\n📊 WHAT JUST HAPPENED:")
     print("   • Loaded 267,523 pre-trained parameters instantly")
-    print("   • Model recognized the learned color transformation")
-    print("   • Applied it to create colored triangulation")
-    print("   • No training needed!")
+    print("   • Applied model to create colored triangulation")
+    print("   • Collected your feedback on color usage")
+    print("   • Fine-tuned model for 150 epochs")
     print("\n⏱️  TIME COMPARISON:")
-    print("   • Example 1 (training): ~15 minutes")
-    print("   • Example 2 (inference): ~3 minutes")
-    print("   • Speed improvement: 5x faster!")
+    print("   • Example 1 (train + feedback): ~18 minutes")
+    print("   • Example 2 (reuse + feedback): ~5 minutes")
+    print("   • Speed improvement: 3.6x faster!")
     print("\n🎯 HOW THIS WORKS:")
-    print("   • The model 'remembers' how to map colors")
-    print("   • It was trained on spiderman → vegetables")
-    print("   • So it knows the color transformation rules")
-    print("   • Just plug it in and go!")
-    print("\n💡 TRY THIS NEXT:")
-    print("   • Run Example 3 with different triangulation density")
-    print("   • Use Example 4 to preview palettes")
-    print("   • Apply to different source images with same model!")
+    print("   • Model remembered how to map colors from Example 1")
+    print("   • Your feedback guided 150-epoch fine-tuning")
+    print("   • Model now incorporates your preferences!")
+    print("\n💡 NEXT TIME:")
+    print("   • Run Example 1 or 2 again for more feedback cycles")
+    print("   • Model gets smarter with each feedback loop")
     print("="*70)
     
     return results
