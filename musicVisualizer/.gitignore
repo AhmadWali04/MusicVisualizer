@@ -1,0 +1,36 @@
+# Environment and configuration
+.env
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Model files (large binary files)
+models/*.pth
+
+# TensorBoard logs
+runs/
+
+# Feedback data (user-specific)
+feedback_data/
+
+# Training data (generated)
+trainingData/
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# Output images (can be regenerated)
+triangulatedImages/
+
+# Keep example/template files
+!.env.example

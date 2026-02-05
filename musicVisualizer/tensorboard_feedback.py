@@ -60,7 +60,7 @@ class TensorBoardFeedbackSystem:
         print(f"Feedback storage: {self.feedback_dir}")
         print(f"\n📊 Start TensorBoard with:")
         print(f"   tensorboard --logdir={log_dir}")
-        print(f"\n🌐 Then open: http://localhost:6006")
+        print(f"\n🌐 Then open: http://127.0.0.1:6006")
         print(f"{'='*70}\n")
 
     def log_initial_visualization(self, palette_rgb, palette_lab,
@@ -131,8 +131,8 @@ class TensorBoardFeedbackSystem:
 
         # Convert to numpy array for TensorBoard
         fig.canvas.draw()
-        image = np.frombuffer(fig.canvas.tostring_argb(), dtype=np.uint8)
-        image = np.asarray(fig.canvas.buffer_rgba())
+        # Remove alpha channel - keep RGB only
+        image = np.asarray(fig.canvas.buffer_rgba())[:, :, :3]
         #image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
         plt.close(fig)
 
@@ -225,8 +225,8 @@ class TensorBoardFeedbackSystem:
 
         # Convert to image
         fig.canvas.draw()
-        image = np.frombuffer(fig.canvas.tostring_argb(), dtype=np.uint8)
-        image = np.asarray(fig.canvas.buffer_rgba())
+        # Remove alpha channel - keep RGB only
+        image = np.asarray(fig.canvas.buffer_rgba())[:, :, :3]
         #image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
         plt.close(fig)
 
@@ -279,8 +279,8 @@ class TensorBoardFeedbackSystem:
 
         # Convert to image
         fig.canvas.draw()
-        image = np.frombuffer(fig.canvas.tostring_argb(), dtype=np.uint8)
-        image = np.asarray(fig.canvas.buffer_rgba())
+        # Remove alpha channel - keep RGB only
+        image = np.asarray(fig.canvas.buffer_rgba())[:, :, :3]
         #image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
         plt.close(fig)
 
@@ -304,7 +304,7 @@ class TensorBoardFeedbackSystem:
         print("FEEDBACK COLLECTION")
         print("="*70)
         print("\n📊 Please review the TensorBoard dashboard at:")
-        print("   http://localhost:6006")
+        print("   http://127.0.0.1:6006")
         print("\nThen rate each color below:\n")
 
         frequency_scores = []
@@ -384,8 +384,25 @@ class TensorBoardFeedbackSystem:
                                   placement_scores[i], 0)
 
     def _save_feedback_json(self, feedback_data):
-        """Save feedback to JSON file."""
-        filename = self.feedback_dir / f"{self.session_name}.json"
+        """Save feedback to JSON file in model-specific subdirectory."""
+        # Extract model name from session_name
+        # Format: "modelname_timestamp" → split to get model part
+        parts = self.session_name.rsplit('_', 2)  # Split from right, max 2 splits
+
+        if len(parts) >= 3:
+            model_name = parts[0]  # Everything before last two underscores
+            timestamp = f"{parts[1]}_{parts[2]}"  # YYYYMMDD_HHMMSS
+        else:
+            # Fallback if format doesn't match
+            model_name = "default"
+            timestamp = self.session_name
+
+        # Create model-specific subdirectory
+        model_dir = self.feedback_dir / model_name
+        model_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save with timestamp as filename
+        filename = model_dir / f"{timestamp}.json"
         with open(filename, 'w') as f:
             json.dump(feedback_data, f, indent=2)
 
@@ -397,22 +414,24 @@ class TensorBoardFeedbackSystem:
         print(f"✓ TensorBoard session closed: {self.session_name}")
 
 
-def load_all_feedback(feedback_dir='feedback_data'):
+def load_all_feedback(feedback_dir='feedback_data', model_name=None):
     """
     Load all previous feedback sessions from JSON files.
 
     Args:
-        feedback_dir: Directory containing feedback JSON files
+        feedback_dir: Base directory containing feedback subdirectories
+        model_name: Model name to load feedback for (e.g., 'spiderman_hybridTheory')
+                   If None, loads from all subdirectories (backward compatibility)
 
     Returns:
         list: List of feedback dictionaries, sorted by timestamp (oldest first)
 
     Example:
+        # Load feedback for specific model
+        feedback = load_all_feedback('feedback_data', 'spiderman_hybridTheory')
+
+        # Load all feedback (backward compatible)
         all_feedback = load_all_feedback()
-        for session in all_feedback:
-            print(f"Session: {session['session_name']}")
-            print(f"  Frequency: {session['frequency_scores']}")
-            print(f"  Placement: {session['placement_scores']}")
     """
     feedback_dir = Path(feedback_dir)
 
@@ -421,14 +440,40 @@ def load_all_feedback(feedback_dir='feedback_data'):
 
     feedback_list = []
 
-    for json_file in feedback_dir.glob('*.json'):
-        try:
-            with open(json_file, 'r') as f:
-                feedback_data = json.load(f)
-                feedback_list.append(feedback_data)
-        except (json.JSONDecodeError, KeyError) as e:
-            print(f"⚠️  Warning: Could not load {json_file}: {e}")
-            continue
+    if model_name:
+        # Load only from specific model subdirectory
+        model_dir = feedback_dir / model_name
+        if model_dir.exists() and model_dir.is_dir():
+            for json_file in model_dir.glob('*.json'):
+                try:
+                    with open(json_file, 'r') as f:
+                        feedback_data = json.load(f)
+                        feedback_list.append(feedback_data)
+                except (json.JSONDecodeError, KeyError) as e:
+                    print(f"⚠️  Warning: Could not load {json_file}: {e}")
+                    continue
+    else:
+        # Backward compatibility: load from root (old format)
+        for json_file in feedback_dir.glob('*.json'):
+            try:
+                with open(json_file, 'r') as f:
+                    feedback_data = json.load(f)
+                    feedback_list.append(feedback_data)
+            except (json.JSONDecodeError, KeyError) as e:
+                print(f"⚠️  Warning: Could not load {json_file}: {e}")
+                continue
+
+        # Also load from all subdirectories (new format)
+        for subdir in feedback_dir.iterdir():
+            if subdir.is_dir():
+                for json_file in subdir.glob('*.json'):
+                    try:
+                        with open(json_file, 'r') as f:
+                            feedback_data = json.load(f)
+                            feedback_list.append(feedback_data)
+                    except (json.JSONDecodeError, KeyError) as e:
+                        print(f"⚠️  Warning: Could not load {json_file}: {e}")
+                        continue
 
     # Sort by timestamp (oldest first)
     feedback_list.sort(key=lambda x: x.get('timestamp', ''))

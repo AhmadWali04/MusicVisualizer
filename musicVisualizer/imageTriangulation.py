@@ -204,12 +204,17 @@ def colorize_triangulation(S, triangles, image_orig, save=False, image_name=None
         R = color[0]/255
         G = color[1]/255
         B = color[2]/255
-
         ax.fill(xs, ys, color=(R, G, B))
     ax.set_axis_off()
-
     if save and image_name:
-        plt.savefig(os.getcwd() + '/triangulatedImages/' + image_name)
+        # If image_name is already a full path, use it; otherwise use old behavior
+        if os.path.isabs(image_name) or '/' in image_name:
+            save_path = image_name
+        else:
+            save_path = os.path.join(os.getcwd(), 'triangulatedImages', image_name)
+
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
 
     plt.show()
 
@@ -303,7 +308,7 @@ def custom_color_triangulation(S, triangles, image_orig, filepath, num_clusters=
     if save and image_name:
         save_path = os.path.join(os.getcwd(), 'triangulatedImages', image_name)
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        plt.savefig(save_path)
+        plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
         print(f"\nSaved custom triangulation to: {save_path}")
 
     plt.show()
@@ -411,7 +416,7 @@ def render_triangulation_with_colors(S, triangles, triangle_colors,
 
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.savefig(save_path, dpi=150, bbox_inches='tight', pad_inches=0)
         print(f"Saved figure to: {save_path}")
 
     return fig, ax
@@ -546,11 +551,21 @@ def pipeline_with_cnn(source_image_path, target_image_path,
 
     # Save outputs if requested
     if save_output:
-        output_dir = os.path.join(os.getcwd(), 'triangulatedImages')
+        # Import config for model name
+        import config
+        from datetime import datetime
+
+        # Create method-specific and model-specific subdirectory
+        base_output_dir = os.path.join(os.getcwd(), 'triangulatedImages')
+        method_dir = 'customColored'  # CNN-based coloring
+        model_name = config.get_model_name()
+        output_dir = os.path.join(base_output_dir, method_dir, model_name)
         os.makedirs(output_dir, exist_ok=True)
 
-        cnn_output_path = os.path.join(output_dir, 'cnn_triangulation.png')
-        cnn_result['figure'].savefig(cnn_output_path, dpi=150, bbox_inches='tight')
+        # Use timestamp for filename to avoid overwriting
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        cnn_output_path = os.path.join(output_dir, f'cnn_{timestamp}.png')
+        cnn_result['figure'].savefig(cnn_output_path, dpi=150, bbox_inches='tight', pad_inches=0)
         print(f"Saved CNN result to: {cnn_output_path}")
 
     # Return results

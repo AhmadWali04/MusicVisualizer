@@ -46,12 +46,14 @@ import re
 # FEEDBACK UTILITIES
 # ============================================================================
 
-def load_previous_feedback(feedback_dir='feedback_data'):
+def load_previous_feedback(feedback_dir='feedback_data', model_name=None):
     """
-    Load all previous feedback from JSON files.
+    Load and process all previous feedback sessions for a specific model.
 
     Args:
         feedback_dir: Directory containing feedback JSON files
+        model_name: Model name to load feedback for (e.g., 'spiderman_hybridTheory')
+                   If None, loads from all subdirectories (backward compatibility)
 
     Returns:
         List of tuples: [(scores, weight), ...] where:
@@ -59,11 +61,11 @@ def load_previous_feedback(feedback_dir='feedback_data'):
             - weight: recency weight (more recent = higher weight)
 
     Example:
-        feedback_list = load_previous_feedback()
+        feedback_list = load_previous_feedback('feedback_data', 'spiderman_hybridTheory')
         # Returns: [([5,7,3,9,8,2,6,4,0,0,5,7,3,9,8,2,6,4,0,0], 1.0),
         #           ([8,3,7,2,6,5,1,9,4,7,8,3,7,2,6,5,1,9,4,7], 0.75), ...]
     """
-    all_feedback = tensorboard_feedback.load_all_feedback(feedback_dir)
+    all_feedback = tensorboard_feedback.load_all_feedback(feedback_dir, model_name=model_name)
 
     if not all_feedback:
         return []
@@ -87,22 +89,40 @@ def load_previous_feedback(feedback_dir='feedback_data'):
 def compute_feedback_weighted_loss(model, source_pixels, target_palette,
                                    feedback_list, device='cpu', n_samples=1000):
     """
-    Compute loss that incorporates user feedback.
-    
-    The loss penalizes:
-    1. Not using colors enough (frequency feedback)
-    2. Using colors in wrong places (placement feedback)
-    
+    Compute loss incorporating user feedback about color usage.
+
+    FEEDBACK SCORING SYSTEM (NEW):
+    - 0 = Never Used (color not appearing, must be added)
+    - 1 = Too Little (appearing but rarely)
+    - 5 = Perfect (ideal usage)
+    - 9 = Too Much (overused, reduce)
+
+    WEIGHT CALCULATION LOGIC:
+    The penalty weight follows a V-shaped curve:
+    - Scores below 5: Linear from 2.0 (score 0) to 0.0 (score 5)
+      Formula: weight = 2.0 - (score / 5.0) * 2.0
+    - Scores above 5: Linear from 0.0 (score 5) to 1.0 (score 9)
+      Formula: weight = ((score - 5) / 4.0) * 1.0
+
+    This creates stronger penalties for under-use (0→2.0) than over-use (9→1.0),
+    encouraging the model to use all palette colors.
+
+    FREQUENCY LOSS (weight: 0.7):
+    Penalizes not using colors based on feedback.
+
+    PLACEMENT LOSS (weight: 0.3):
+    Penalizes using colors in perceptually wrong locations.
+
     Args:
-        model: ColorTransferNet
-        source_pixels: Source image pixels (N, 3), normalized [0,1]
+        model: ColorTransferNet instance
+        source_pixels: Source pixels (N, 3), normalized [0,1]
         target_palette: Target palette (10, 3), normalized [0,1]
-        feedback_list: List of (scores, weight) tuples from load_previous_feedback()
+        feedback_list: List of (scores, recency_weight) tuples
         device: 'cpu' or 'cuda'
-        n_samples: Number of pixels to sample
-    
+        n_samples: Number of samples for loss calculation
+
     Returns:
-        loss: Scalar tensor incorporating feedback
+        Scalar tensor with feedback-weighted loss
     """
     if not feedback_list:
         # No feedback yet, return 0
@@ -148,11 +168,16 @@ def compute_feedback_weighted_loss(model, source_pixels, target_palette,
         distances = torch.norm(output_colors_255 - target_color, dim=1)  # (N,)
         closest_dist = torch.min(distances)
         
-        # Frequency feedback: 0 = want more, 9 = want less
-        freq_score = avg_freq_scores[color_idx]  # 0-9
-        # Convert to penalty: 0 (don't use) -> high penalty, 9 (use more) -> low penalty
-        # Invert: higher score = lower penalty
-        freq_penalty_weight = (9 - freq_score) / 9.0  # 1.0 (use more) to 0.0 (don't use)
+        # Frequency feedback: 0 = never used, 1 = too little, 5 = perfect, 9 = too much
+        freq_score = np.clip(avg_freq_scores[color_idx], 0, 9)  # Ensure valid range
+
+        # V-shaped curve centered at 5 (perfect)
+        if freq_score < 5:
+            # Under-used colors: linear penalty (0→2.0, 5→0.0)
+            freq_penalty_weight = 2.0 - (freq_score / 5.0) * 2.0
+        else:
+            # Over-used colors: gentler penalty (5→0.0, 9→1.0)
+            freq_penalty_weight = ((freq_score - 5) / 4.0) * 1.0
         
         # Penalize if network isn't using this color
         frequency_loss += freq_penalty_weight * closest_dist
@@ -164,15 +189,18 @@ def compute_feedback_weighted_loss(model, source_pixels, target_palette,
     placement_loss = 0.0
     
     for color_idx in range(10):
-        placement_score = avg_place_scores[color_idx]  # 0-9
-        
+        # Placement feedback: same V-shaped curve as frequency
+        placement_score = np.clip(avg_place_scores[color_idx], 0, 9)
+
         if placement_score == 0:
-            # User said placement is wrong, penalize network output variance for this color
+            # User said never used, skip placement evaluation
             continue
-        
-        # Placement feedback: 0 = wrong places, 9 = excellent
-        # Higher score = network is doing better, so lower penalty
-        place_penalty_weight = (9 - placement_score) / 9.0  # 1.0 (wrong) to 0.0 (excellent)
+
+        # V-shaped curve: 1 = wrong places, 5 = good, 9 = excellent
+        if placement_score < 5:
+            place_penalty_weight = 2.0 - (placement_score / 5.0) * 2.0
+        else:
+            place_penalty_weight = ((placement_score - 5) / 4.0) * 1.0
         
         # For each output pixel, check if it's close to palette
         target_color = palette_255[color_idx:color_idx+1]
@@ -195,7 +223,7 @@ def fine_tune_with_feedback(model, source_pixels, target_palette,
                             source_pixels_lab, target_palette_lab,
                             epochs=150, batch_size=512, lr=0.0005,
                             device='cpu', feedback_dir='feedback_data',
-                            log_dir='runs/fine_tuning'):
+                            log_dir='runs/fine_tuning', model_name=None):
     """
     Fine-tune model with feedback from previous training sessions.
 
@@ -211,14 +239,15 @@ def fine_tune_with_feedback(model, source_pixels, target_palette,
         device: 'cpu' or 'cuda'
         feedback_dir: Directory containing feedback JSON files
         log_dir: TensorBoard log directory for fine-tuning visualization
+        model_name: Model name for loading model-specific feedback (e.g., 'spiderman_hybridTheory')
 
     Returns:
         Tuple: (fine_tuned_model, loss_history)
     """
     from torch.utils.tensorboard import SummaryWriter
 
-    # Load previous feedback from JSON
-    feedback_list = load_previous_feedback(feedback_dir)
+    # Load previous feedback from JSON (model-specific if model_name provided)
+    feedback_list = load_previous_feedback(feedback_dir, model_name=model_name)
 
     if not feedback_list:
         print("\nNo previous feedback found. Skipping feedback fine-tuning.")
@@ -234,7 +263,7 @@ def fine_tune_with_feedback(model, source_pixels, target_palette,
     print(f"Recent sessions weighted more heavily")
     print(f"Fine-tuning for {epochs} epochs with learning rate {lr}")
     print(f"TensorBoard: tensorboard --logdir={log_dir}")
-    print(f"URL: http://localhost:6006")
+    print(f"URL: http://127.0.0.1:6006")
     print("="*70)
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -1092,6 +1121,10 @@ def visualize_training_progress(model, source_pixels, target_palette,
         )
     
     # Plot target palette as larger points
+    # Convert target colors to RGB strings for Plotly
+    target_color_strs = [f'rgb({int(c[0]*255)}, {int(c[1]*255)}, {int(c[2]*255)})'
+                         for c in target_colors]
+
     fig6.add_trace(
         go.Scatter(
             x=target_colors[:, 0],
@@ -1099,7 +1132,7 @@ def visualize_training_progress(model, source_pixels, target_palette,
             mode='markers',
             marker=dict(
                 size=15,
-                color=target_colors,
+                color=target_color_strs,
                 line=dict(color='black', width=2),
                 opacity=0.9
             ),
@@ -1229,8 +1262,8 @@ def apply_cnn_to_triangulation(model, S, triangles, image_orig, device='cpu'):
         ax.fill(xs, ys, color=rgb_normalized, edgecolor='none')
     
     ax.set_axis_off()
-    ax.set_title('CNN-Colored Triangulation', fontsize=14, fontweight='bold')
-    
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+
     return {
         'figure': fig,
         'triangle_colors': triangle_colors,
@@ -1444,17 +1477,17 @@ def compare_methods(S, triangles, image_orig, source_path, target_path,
     
     # Subplot 1: Original
     ax1 = fig.add_subplot(2, 2, 1)
-    ax1.imshow(np.array(fig_orig.canvas.buffer_rgba()))
+    ax1.imshow(np.array(fig_orig.canvas.buffer_rgba())[:, :, :3])
     ax1.set_axis_off()
     
     # Subplot 2: Nearest color
     ax2 = fig.add_subplot(2, 2, 2)
-    ax2.imshow(np.array(fig_nearest.canvas.buffer_rgba()))
+    ax2.imshow(np.array(fig_nearest.canvas.buffer_rgba())[:, :, :3])
     ax2.set_axis_off()
     
     # Subplot 3: CNN
     ax3 = fig.add_subplot(2, 2, 3)
-    ax3.imshow(np.array(fig_cnn.canvas.buffer_rgba()))
+    ax3.imshow(np.array(fig_cnn.canvas.buffer_rgba())[:, :, :3])
     ax3.set_axis_off()
     
     # Subplot 4: Palettes
