@@ -55,6 +55,7 @@ def load_image(filepath):
 def convert_to_greyscale(image):
     """Convert image to greyscale and display."""
     image_data = image.load()
+    image = image.convert('RGBA')  # Ensure we have RGBA for consistent pixel access
     for i in range(image.width):
         for j in range(image.height):
             try:
