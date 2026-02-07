@@ -51,6 +51,20 @@ DENSITY_REDUCTION = int(os.getenv('DENSITY_REDUCTION', '60'))
 
 
 # =============================================================================
+# CNN TRAINING PARAMETERS
+# =============================================================================
+
+# Number of training epochs for initial CNN training
+EPOCHS = int(os.getenv('EPOCHS', '1000'))
+
+# Number of epochs for feedback fine-tuning
+FINE_TUNE_EPOCHS = int(os.getenv('FINE_TUNE_EPOCHS', '150'))
+
+# Temperature for palette color selection (lower = sharper/more colorful)
+TEMPERATURE = float(os.getenv('TEMPERATURE', '0.5'))
+
+
+# =============================================================================
 # DIRECTORY PATHS
 # =============================================================================
 
@@ -102,9 +116,10 @@ def get_model_path():
     Generate full model path based on template and palette basenames.
 
     Returns:
-        str: Full path like 'models/spiderman_hybridTheory.pth'
+        str: Full path like 'models/spiderman/spiderman_hybridTheory.pth'
     """
-    return f'{MODELS_DIR}/{get_model_name()}.pth'
+    template_base = get_image_basename(TEMPLATE_IMAGE)
+    return f'{MODELS_DIR}/{template_base}/{get_model_name()}.pth'
 
 
 def get_session_name(timestamp_str):
@@ -144,6 +159,14 @@ def validate_config():
     if DENSITY_REDUCTION < 1:
         errors.append(f"DENSITY_REDUCTION must be >= 1, got {DENSITY_REDUCTION}")
 
+    # Validate CNN training parameters
+    if EPOCHS < 1:
+        errors.append(f"EPOCHS must be >= 1, got {EPOCHS}")
+    if FINE_TUNE_EPOCHS < 1:
+        errors.append(f"FINE_TUNE_EPOCHS must be >= 1, got {FINE_TUNE_EPOCHS}")
+    if TEMPERATURE <= 0:
+        errors.append(f"TEMPERATURE must be > 0, got {TEMPERATURE}")
+
     return errors
 
 
@@ -157,6 +180,9 @@ def print_config():
     print(f"  NUM_CLUSTERS:       {NUM_CLUSTERS}")
     print(f"  NUM_DISTINCT:       {NUM_DISTINCT}")
     print(f"  DENSITY_REDUCTION:  {DENSITY_REDUCTION}")
+    print(f"  EPOCHS:             {EPOCHS}")
+    print(f"  FINE_TUNE_EPOCHS:   {FINE_TUNE_EPOCHS}")
+    print(f"  TEMPERATURE:        {TEMPERATURE}")
     print("-" * 60)
     print(f"  Model Name:      {get_model_name()}")
     print(f"  Model Path:      {get_model_path()}")

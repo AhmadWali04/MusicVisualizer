@@ -428,6 +428,7 @@ def pipeline_with_cnn(source_image_path, target_image_path,
                      num_clusters=25, num_distinct=10,
                      use_pretrained_model=None,
                      train_epochs=1000,
+                     temperature=0.5,
                      save_model_path=None,
                      device='cpu',
                      save_output=False):
@@ -450,6 +451,7 @@ def pipeline_with_cnn(source_image_path, target_image_path,
         num_distinct: Distinct colors to use (default: 10)
         use_pretrained_model: Path to pretrained model (skip training if provided)
         train_epochs: Epochs to train if not using pretrained (default: 1000)
+        temperature: Softmax temperature for palette selection (default: 0.5)
         save_model_path: Where to save trained model (default: None)
         device: 'cpu' or 'cuda' (default: 'cpu')
         save_output: Whether to save output images (default: False)
@@ -470,6 +472,7 @@ def pipeline_with_cnn(source_image_path, target_image_path,
             threshold=50,
             density_reduction=60,
             train_epochs=1000,
+            temperature=0.5,
             save_model_path='models/spiderman_veg.pth'
         )
         results['cnn_result']['figure'].show()
@@ -494,6 +497,9 @@ def pipeline_with_cnn(source_image_path, target_image_path,
     triangles = Delaunay(S)
     print(f"Triangulation complete: {len(triangles.simplices)} triangles created")
 
+    # Show triangulation skeleton (wireframe) before coloring
+    visualize_triangulation(S, triangles)
+
     # Step 2: Train or load model
     print("\n[Step 2] Preparing model...")
     if use_pretrained_model:
@@ -510,6 +516,7 @@ def pipeline_with_cnn(source_image_path, target_image_path,
             data['source_pixels'], data['target_palette'],
             data['source_pixels_lab'], data['target_palette_lab'],
             epochs=train_epochs, batch_size=512, lr=0.001,
+            temperature=temperature,
             device=device, save_progress=False
         )
 
@@ -557,10 +564,12 @@ def pipeline_with_cnn(source_image_path, target_image_path,
         from datetime import datetime
 
         # Create method-specific and model-specific subdirectory
+        # Structure: customColored/{TEMPLATE}/{TEMPLATE}_{PALETTE}/
         base_output_dir = os.path.join(os.getcwd(), 'triangulatedImages')
         method_dir = 'customColored'  # CNN-based coloring
+        template_name = config.get_image_basename(source_image_path)
         model_name = config.get_model_name()
-        output_dir = os.path.join(base_output_dir, method_dir, model_name)
+        output_dir = os.path.join(base_output_dir, method_dir, template_name, model_name)
         os.makedirs(output_dir, exist_ok=True)
 
         # Use timestamp for filename to avoid overwriting

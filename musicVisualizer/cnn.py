@@ -14,6 +14,7 @@ Key Components:
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 import numpy as np
@@ -46,7 +47,7 @@ import re
 # FEEDBACK UTILITIES
 # ============================================================================
 
-def load_previous_feedback(feedback_dir='feedback_data', model_name=None):
+def load_previous_feedback(feedback_dir='feedback_data', model_name=None, template_name=None):
     """
     Load and process all previous feedback sessions for a specific model.
 
@@ -54,6 +55,7 @@ def load_previous_feedback(feedback_dir='feedback_data', model_name=None):
         feedback_dir: Directory containing feedback JSON files
         model_name: Model name to load feedback for (e.g., 'spiderman_hybridTheory')
                    If None, loads from all subdirectories (backward compatibility)
+        template_name: Template image basename for nested directory lookup
 
     Returns:
         List of tuples: [(scores, weight), ...] where:
@@ -61,11 +63,12 @@ def load_previous_feedback(feedback_dir='feedback_data', model_name=None):
             - weight: recency weight (more recent = higher weight)
 
     Example:
-        feedback_list = load_previous_feedback('feedback_data', 'spiderman_hybridTheory')
+        feedback_list = load_previous_feedback('feedback_data', 'spiderman_hybridTheory', 'spiderman')
         # Returns: [([5,7,3,9,8,2,6,4,0,0,5,7,3,9,8,2,6,4,0,0], 1.0),
         #           ([8,3,7,2,6,5,1,9,4,7,8,3,7,2,6,5,1,9,4,7], 0.75), ...]
     """
-    all_feedback = tensorboard_feedback.load_all_feedback(feedback_dir, model_name=model_name)
+    all_feedback = tensorboard_feedback.load_all_feedback(feedback_dir, model_name=model_name,
+                                                          template_name=template_name)
 
     if not all_feedback:
         return []
@@ -223,7 +226,8 @@ def fine_tune_with_feedback(model, source_pixels, target_palette,
                             source_pixels_lab, target_palette_lab,
                             epochs=150, batch_size=512, lr=0.0005,
                             device='cpu', feedback_dir='feedback_data',
-                            log_dir='runs/fine_tuning', model_name=None):
+                            log_dir='runs/fine_tuning', model_name=None,
+                            template_name=None):
     """
     Fine-tune model with feedback from previous training sessions.
 
@@ -240,6 +244,7 @@ def fine_tune_with_feedback(model, source_pixels, target_palette,
         feedback_dir: Directory containing feedback JSON files
         log_dir: TensorBoard log directory for fine-tuning visualization
         model_name: Model name for loading model-specific feedback (e.g., 'spiderman_hybridTheory')
+        template_name: Template image basename for nested directory lookup
 
     Returns:
         Tuple: (fine_tuned_model, loss_history)
@@ -247,7 +252,8 @@ def fine_tune_with_feedback(model, source_pixels, target_palette,
     from torch.utils.tensorboard import SummaryWriter
 
     # Load previous feedback from JSON (model-specific if model_name provided)
-    feedback_list = load_previous_feedback(feedback_dir, model_name=model_name)
+    feedback_list = load_previous_feedback(feedback_dir, model_name=model_name,
+                                           template_name=template_name)
 
     if not feedback_list:
         print("\nNo previous feedback found. Skipping feedback fine-tuning.")
@@ -267,11 +273,12 @@ def fine_tune_with_feedback(model, source_pixels, target_palette,
     print("="*70)
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    loss_history = {'feedback': [], 'total': [], 'histogram': [], 'nearest': []}
+    loss_history = {'feedback': [], 'total': [], 'histogram': [], 'nearest': [], 'entropy': []}
 
     # Initialize loss functions for auxiliary losses
     histogram_loss_fn = ColorHistogramLoss(num_bins=16).to(device)
     nearest_color_loss_fn = NearestColorDistanceLoss().to(device)
+    entropy_loss_fn = PaletteEntropyLoss().to(device)
 
     print_progress_bar.start_time = time.time()
 
@@ -296,9 +303,10 @@ def fine_tune_with_feedback(model, source_pixels, target_palette,
         # Also compute standard losses for reference
         hist_loss = histogram_loss_fn(output, target_palette)
         nearest_loss = nearest_color_loss_fn(output, target_palette)
+        entropy_loss = entropy_loss_fn(model, batch)
 
         # Total loss (weighted combination)
-        total_loss = feedback_loss + 0.3 * hist_loss + 0.2 * nearest_loss
+        total_loss = feedback_loss + 0.3 * hist_loss + 0.2 * nearest_loss + 0.2 * entropy_loss
 
         # Backward pass
         if total_loss.item() > 0:
@@ -310,11 +318,13 @@ def fine_tune_with_feedback(model, source_pixels, target_palette,
         loss_history['total'].append(total_loss.item())
         loss_history['histogram'].append(hist_loss.item())
         loss_history['nearest'].append(nearest_loss.item())
+        loss_history['entropy'].append(entropy_loss.item())
 
         # Log to TensorBoard
         writer.add_scalar('Fine_Tuning/Feedback_Loss', feedback_loss.item(), epoch)
         writer.add_scalar('Fine_Tuning/Histogram_Loss', hist_loss.item(), epoch)
         writer.add_scalar('Fine_Tuning/Nearest_Color_Loss', nearest_loss.item(), epoch)
+        writer.add_scalar('Fine_Tuning/Entropy_Loss', entropy_loss.item(), epoch)
         writer.add_scalar('Fine_Tuning/Total_Loss', total_loss.item(), epoch)
 
         # Log sample outputs every 50 epochs
@@ -429,62 +439,86 @@ def print_progress_bar(iteration, total, prefix='', length=50, decimals=1):
 class ColorTransferNet(nn.Module):
     """
     Neural network that learns to map source image colors to target palette colors.
-    
+
     Architecture:
     - Input: RGB color [3 values, 0-1 normalized]
     - Hidden layers: 5 layers with 256 neurons each
     - Activation: ReLU after each hidden layer
     - Normalization: BatchNorm1d after each ReLU
-    - Output: RGB color [3 values, 0-1 normalized] with Sigmoid activation
-    
-    The network learns complex non-linear color transformations that preserve
-    visual harmony with the target palette while maintaining source image structure.
+    - Output: Logits over palette colors, softmax-blended with temperature
+
+    The network outputs logits over the target palette and uses temperature-scaled
+    softmax to select/blend palette colors. This constrains outputs to actual palette
+    colors and prevents grey-averaging.
+
+    Temperature controls color selection sharpness:
+    - Low (0.1-0.5): Sharp picks, more colorful, uses more palette colors
+    - High (1.0+): Soft blending, smoother but less saturated
     """
-    
-    def __init__(self, n_layers=5, hidden_dim=256):
+
+    def __init__(self, num_palette_colors=10, n_layers=5, hidden_dim=256, temperature=0.5):
         """
         Initialize the ColorTransferNet.
-        
+
         Args:
+            num_palette_colors: Number of target palette colors (default: 10)
             n_layers: Number of hidden layers (default: 5)
             hidden_dim: Number of neurons in each hidden layer (default: 256)
+            temperature: Softmax temperature for palette selection (default: 0.5)
         """
         super(ColorTransferNet, self).__init__()
-        
+
         self.n_layers = n_layers
         self.hidden_dim = hidden_dim
-        
+        self.num_palette_colors = num_palette_colors
+        self.temperature = temperature
+
+        # Palette stored as buffer (saved with model, not a trainable parameter)
+        self.register_buffer('palette', None)
+
         # Build network layers dynamically
         layers = []
-        
+
         # First layer: 3 (RGB) -> hidden_dim
         layers.append(nn.Linear(3, hidden_dim))
         layers.append(nn.ReLU())
         layers.append(nn.BatchNorm1d(hidden_dim))
-        
+
         # Hidden layers: hidden_dim -> hidden_dim
         for _ in range(n_layers - 1):
             layers.append(nn.Linear(hidden_dim, hidden_dim))
             layers.append(nn.ReLU())
             layers.append(nn.BatchNorm1d(hidden_dim))
-        
-        # Output layer: hidden_dim -> 3 (RGB)
-        layers.append(nn.Linear(hidden_dim, 3))
-        layers.append(nn.Sigmoid())  # Output in [0, 1] range
-        
+
+        # Output layer: logits over palette colors (no Sigmoid)
+        layers.append(nn.Linear(hidden_dim, num_palette_colors))
+
         self.network = nn.Sequential(*layers)
-    
+
+    def set_palette(self, palette_tensor):
+        """
+        Set the target palette colors. Must be called before forward().
+
+        Args:
+            palette_tensor: Tensor of shape (num_palette_colors, 3) with RGB values in [0, 1]
+        """
+        self.register_buffer('palette', palette_tensor)
+
     def forward(self, colors):
         """
         Forward pass through the network.
-        
+
         Args:
             colors: Input tensor of shape (batch_size, 3) with values in [0, 1]
-        
+
         Returns:
             output: Tensor of shape (batch_size, 3) with values in [0, 1]
+                    Each output is a temperature-weighted blend of palette colors.
         """
-        return self.network(colors)
+        logits = self.network(colors)                              # (batch, num_palette_colors)
+        weights = F.softmax(logits / self.temperature, dim=-1)     # (batch, num_palette_colors)
+        output = torch.matmul(weights, self.palette)               # (batch, 3)
+        return output
 
 
 class ColorHistogramLoss(nn.Module):
@@ -594,6 +628,35 @@ class NearestColorDistanceLoss(nn.Module):
         loss = min_distances.mean()
         
         return loss
+
+
+class PaletteEntropyLoss(nn.Module):
+    """
+    Penalizes high entropy in palette assignment weights.
+
+    Encourages the network to make decisive color picks rather than
+    blending all palette colors equally (which produces muddy averages).
+    Lower entropy = sharper palette assignment = more colorful output.
+    """
+
+    def __init__(self):
+        super(PaletteEntropyLoss, self).__init__()
+
+    def forward(self, model, batch):
+        """
+        Compute entropy of palette assignment weights.
+
+        Args:
+            model: ColorTransferNet with temperature and network attributes
+            batch: Input tensor of shape (N, 3) with values in [0, 1]
+
+        Returns:
+            loss: Scalar tensor (mean entropy across batch)
+        """
+        logits = model.network(batch)
+        weights = F.softmax(logits / model.temperature, dim=-1)
+        entropy = -(weights * torch.log(weights + 1e-8)).sum(dim=-1)
+        return entropy.mean()
 
 
 def compute_smoothness_loss(model, source_pixels, n_samples=1000, noise_scale=0.01, device='cpu'):
@@ -749,23 +812,25 @@ def prepare_training_data(source_image_path, target_image_path,
 def train_color_transfer_network(source_pixels, target_palette,
                                 source_pixels_lab, target_palette_lab,
                                 epochs=1000, batch_size=512, lr=0.001,
+                                temperature=0.5,
                                 device='cpu', save_progress=True):
     """
     Train the ColorTransferNet to map source colors to target palette.
-    
+
     Training Process:
-    1. Initialize ColorTransferNet, optimizer, and loss functions
+    1. Initialize ColorTransferNet with palette-assignment architecture
     2. For each epoch:
        a. Sample random batch of source pixels
-       b. Forward pass through network
+       b. Forward pass through network (logits -> softmax/temp -> palette blend)
        c. Compute composite loss:
           - ColorHistogramLoss: output distribution vs target distribution (weight: 1.0)
-          - NearestColorDistanceLoss: each output to nearest target color (weight: 0.5)
-          - SmoothnessLoss: smooth transformations (weight: 0.1)
+          - NearestColorDistanceLoss: each output to nearest target color (weight: 0.2)
+          - SmoothnessLoss: smooth transformations (weight: 0.05)
+          - PaletteEntropyLoss: decisive palette picks (weight: 0.3)
        d. Backward pass and optimize
-       e. Log progress every 50 epochs
+       e. Log progress every 100 epochs
     3. Return trained model and loss history
-    
+
     Args:
         source_pixels: Tensor (N, 3) - source image pixels, normalized [0, 1]
         target_palette: Tensor (M, 3) - target palette colors, normalized [0, 1]
@@ -774,45 +839,59 @@ def train_color_transfer_network(source_pixels, target_palette,
         epochs: Number of training epochs (default: 1000)
         batch_size: Batch size for training (default: 512)
         lr: Learning rate (default: 0.001)
+        temperature: Softmax temperature for palette selection (default: 0.5)
         device: 'cpu' or 'cuda'
         save_progress: Whether to save progress plots
-    
+
     Returns:
         Tuple containing:
             - trained_model: Trained ColorTransferNet
             - loss_history: Dict with loss values per epoch
     """
+    num_palette_colors = target_palette.shape[0]
+
     print("\n=== Training Color Transfer Network ===")
     print(f"Device: {device}")
     print(f"Network architecture: 5 layers, 256 hidden units")
+    print(f"Palette colors: {num_palette_colors}, Temperature: {temperature}")
     print(f"Training epochs: {epochs}, batch size: {batch_size}, learning rate: {lr}")
-    
-    # Initialize model
-    model = ColorTransferNet(n_layers=5, hidden_dim=256).to(device)
-    
+
+    # Initialize model with palette-assignment architecture
+    model = ColorTransferNet(
+        num_palette_colors=num_palette_colors,
+        n_layers=5, hidden_dim=256,
+        temperature=temperature
+    ).to(device)
+
+    # Set the target palette (stored as buffer, saved with model)
+    model.set_palette(target_palette)
+
     # Initialize optimizer
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    
+
     # Initialize loss functions
     histogram_loss_fn = ColorHistogramLoss(num_bins=16).to(device)
     nearest_color_loss_fn = NearestColorDistanceLoss().to(device)
-    
+    entropy_loss_fn = PaletteEntropyLoss().to(device)
+
     # Loss weights
     w_histogram = 1.0
-    w_nearest = 0.5
-    w_smoothness = 0.1
-    
+    w_nearest = 0.2
+    w_smoothness = 0.05
+    w_entropy = 0.3
+
     # Training loop with progress bar
     loss_history = {
         'total': [],
         'histogram': [],
         'nearest_color': [],
-        'smoothness': []
+        'smoothness': [],
+        'entropy': []
     }
-    
+
     # Initialize progress bar timer
     print_progress_bar.start_time = time.time()
-    
+
     for epoch in range(epochs):
         # Sample random batch
         if len(source_pixels) > batch_size:
@@ -820,50 +899,53 @@ def train_color_transfer_network(source_pixels, target_palette,
             batch = source_pixels[indices]
         else:
             batch = source_pixels
-        
+
         # Forward pass
         output = model(batch)
-        
+
         # Compute losses
         histogram_loss = histogram_loss_fn(output, target_palette)
         nearest_color_loss = nearest_color_loss_fn(output, target_palette)
         smoothness_loss = compute_smoothness_loss(
-            model, source_pixels, n_samples=1000, 
+            model, source_pixels, n_samples=1000,
             noise_scale=0.01, device=device
         )
-        
+        entropy_loss = entropy_loss_fn(model, batch)
+
         # Composite loss
-        total_loss = (w_histogram * histogram_loss + 
-                     w_nearest * nearest_color_loss + 
-                     w_smoothness * smoothness_loss)
-        
+        total_loss = (w_histogram * histogram_loss +
+                     w_nearest * nearest_color_loss +
+                     w_smoothness * smoothness_loss +
+                     w_entropy * entropy_loss)
+
         # Backward pass
         optimizer.zero_grad()
         total_loss.backward()
         optimizer.step()
-        
+
         # Record losses
         loss_history['total'].append(total_loss.item())
         loss_history['histogram'].append(histogram_loss.item())
         loss_history['nearest_color'].append(nearest_color_loss.item())
         loss_history['smoothness'].append(smoothness_loss.item())
-        
+        loss_history['entropy'].append(entropy_loss.item())
+
         # Update progress bar
-        print_progress_bar(epoch + 1, epochs, 
-                          prefix=f'Training (Loss: {total_loss.item():.6f})', 
+        print_progress_bar(epoch + 1, epochs,
+                          prefix=f'Training (Loss: {total_loss.item():.6f})',
                           length=40)
-        
+
         # Log detailed progress every 100 epochs
         if (epoch + 1) % 100 == 0:
             print(f"\n  └─ Epoch {epoch+1}/{epochs} | "
                   f"Total: {total_loss.item():.6f} | "
                   f"Histogram: {histogram_loss.item():.6f} | "
                   f"Nearest: {nearest_color_loss.item():.6f} | "
-                  f"Smoothness: {smoothness_loss.item():.6f}")
+                  f"Entropy: {entropy_loss.item():.6f}")
             print_progress_bar.start_time = time.time() - (time.time() - print_progress_bar.start_time)
-    
+
     print("\n\n✓ Training complete!")
-    
+
     return model, loss_history
 
 
@@ -1302,12 +1384,14 @@ def save_trained_model(model, filepath, metadata=None):
     # Create directory if it doesn't exist
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     
-    # Prepare save data
+    # Prepare save data (palette buffer is included in state_dict automatically)
     save_dict = {
         'model_state_dict': model.state_dict(),
         'model_architecture': {
             'n_layers': model.n_layers,
-            'hidden_dim': model.hidden_dim
+            'hidden_dim': model.hidden_dim,
+            'num_palette_colors': model.num_palette_colors,
+            'temperature': model.temperature,
         },
         'metadata': metadata or {}
     }
@@ -1337,11 +1421,13 @@ def load_trained_model(filepath, device='cpu'):
     # Load checkpoint
     checkpoint = torch.load(filepath, map_location=device)
     
-    # Recreate model
+    # Recreate model with palette-assignment architecture
     arch = checkpoint['model_architecture']
     model = ColorTransferNet(
+        num_palette_colors=arch.get('num_palette_colors', 10),
         n_layers=arch['n_layers'],
-        hidden_dim=arch['hidden_dim']
+        hidden_dim=arch['hidden_dim'],
+        temperature=arch.get('temperature', 0.5),
     ).to(device)
     
     # Load weights

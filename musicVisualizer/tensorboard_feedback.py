@@ -34,18 +34,20 @@ class TensorBoardFeedbackSystem:
     4. Structured storage of feedback data
     """
 
-    def __init__(self, session_name=None, log_dir='runs/feedback'):
+    def __init__(self, session_name=None, log_dir='runs/feedback', template_name=None):
         """
         Initialize TensorBoard feedback system.
 
         Args:
             session_name: Name for this feedback session (default: timestamp)
             log_dir: Base directory for TensorBoard logs
+            template_name: Template image basename for subdirectory grouping
         """
         if session_name is None:
             session_name = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
         self.session_name = session_name
+        self.template_name = template_name
         self.log_dir = os.path.join(log_dir, session_name)
         self.writer = SummaryWriter(self.log_dir)
 
@@ -384,7 +386,7 @@ class TensorBoardFeedbackSystem:
                                   placement_scores[i], 0)
 
     def _save_feedback_json(self, feedback_data):
-        """Save feedback to JSON file in model-specific subdirectory."""
+        """Save feedback to JSON file in template/model-specific subdirectory."""
         # Extract model name from session_name
         # Format: "modelname_timestamp" → split to get model part
         parts = self.session_name.rsplit('_', 2)  # Split from right, max 2 splits
@@ -397,8 +399,12 @@ class TensorBoardFeedbackSystem:
             model_name = "default"
             timestamp = self.session_name
 
-        # Create model-specific subdirectory
-        model_dir = self.feedback_dir / model_name
+        # Create template/model-specific subdirectory
+        # Structure: feedback_data/{template_name}/{model_name}/
+        if self.template_name:
+            model_dir = self.feedback_dir / self.template_name / model_name
+        else:
+            model_dir = self.feedback_dir / model_name
         model_dir.mkdir(parents=True, exist_ok=True)
 
         # Save with timestamp as filename
@@ -414,7 +420,7 @@ class TensorBoardFeedbackSystem:
         print(f"✓ TensorBoard session closed: {self.session_name}")
 
 
-def load_all_feedback(feedback_dir='feedback_data', model_name=None):
+def load_all_feedback(feedback_dir='feedback_data', model_name=None, template_name=None):
     """
     Load all previous feedback sessions from JSON files.
 
@@ -422,13 +428,15 @@ def load_all_feedback(feedback_dir='feedback_data', model_name=None):
         feedback_dir: Base directory containing feedback subdirectories
         model_name: Model name to load feedback for (e.g., 'spiderman_hybridTheory')
                    If None, loads from all subdirectories (backward compatibility)
+        template_name: Template image basename for nested directory lookup
+                      If provided, looks in feedback_dir/{template_name}/{model_name}/
 
     Returns:
         list: List of feedback dictionaries, sorted by timestamp (oldest first)
 
     Example:
-        # Load feedback for specific model
-        feedback = load_all_feedback('feedback_data', 'spiderman_hybridTheory')
+        # Load feedback for specific model (new nested structure)
+        feedback = load_all_feedback('feedback_data', 'spiderman_hybridTheory', 'spiderman')
 
         # Load all feedback (backward compatible)
         all_feedback = load_all_feedback()
@@ -441,7 +449,20 @@ def load_all_feedback(feedback_dir='feedback_data', model_name=None):
     feedback_list = []
 
     if model_name:
-        # Load only from specific model subdirectory
+        # Try new nested structure first: feedback_data/{template}/{model_name}/
+        if template_name:
+            model_dir = feedback_dir / template_name / model_name
+            if model_dir.exists() and model_dir.is_dir():
+                for json_file in model_dir.glob('*.json'):
+                    try:
+                        with open(json_file, 'r') as f:
+                            feedback_data = json.load(f)
+                            feedback_list.append(feedback_data)
+                    except (json.JSONDecodeError, KeyError) as e:
+                        print(f"Warning: Could not load {json_file}: {e}")
+                        continue
+
+        # Also check old flat structure: feedback_data/{model_name}/
         model_dir = feedback_dir / model_name
         if model_dir.exists() and model_dir.is_dir():
             for json_file in model_dir.glob('*.json'):
@@ -450,7 +471,7 @@ def load_all_feedback(feedback_dir='feedback_data', model_name=None):
                         feedback_data = json.load(f)
                         feedback_list.append(feedback_data)
                 except (json.JSONDecodeError, KeyError) as e:
-                    print(f"⚠️  Warning: Could not load {json_file}: {e}")
+                    print(f"Warning: Could not load {json_file}: {e}")
                     continue
     else:
         # Backward compatibility: load from root (old format)
@@ -460,20 +481,19 @@ def load_all_feedback(feedback_dir='feedback_data', model_name=None):
                     feedback_data = json.load(f)
                     feedback_list.append(feedback_data)
             except (json.JSONDecodeError, KeyError) as e:
-                print(f"⚠️  Warning: Could not load {json_file}: {e}")
+                print(f"Warning: Could not load {json_file}: {e}")
                 continue
 
-        # Also load from all subdirectories (new format)
-        for subdir in feedback_dir.iterdir():
-            if subdir.is_dir():
-                for json_file in subdir.glob('*.json'):
-                    try:
-                        with open(json_file, 'r') as f:
-                            feedback_data = json.load(f)
-                            feedback_list.append(feedback_data)
-                    except (json.JSONDecodeError, KeyError) as e:
-                        print(f"⚠️  Warning: Could not load {json_file}: {e}")
-                        continue
+        # Also load from all subdirectories (handles both old and new formats)
+        for json_file in feedback_dir.glob('**/*.json'):
+            if json_file.parent != feedback_dir:  # Skip root files already loaded
+                try:
+                    with open(json_file, 'r') as f:
+                        feedback_data = json.load(f)
+                        feedback_list.append(feedback_data)
+                except (json.JSONDecodeError, KeyError) as e:
+                    print(f"Warning: Could not load {json_file}: {e}")
+                    continue
 
     # Sort by timestamp (oldest first)
     feedback_list.sort(key=lambda x: x.get('timestamp', ''))
@@ -482,7 +502,8 @@ def load_all_feedback(feedback_dir='feedback_data', model_name=None):
 
 
 def get_user_feedback_tensorboard(palette_rgb, palette_lab, triangle_colors,
-                                  image_original, image_cnn, session_name=None):
+                                  image_original, image_cnn, session_name=None,
+                                  template_name=None):
     """
     Complete TensorBoard-based feedback workflow.
 
@@ -495,6 +516,7 @@ def get_user_feedback_tensorboard(palette_rgb, palette_lab, triangle_colors,
         image_original: PIL Image - original triangulation
         image_cnn: PIL Image - CNN-colored triangulation
         session_name: Optional name for this session
+        template_name: Template image basename for subdirectory grouping
 
     Returns:
         list: [freq0, ..., freq9, place0, ..., place9] (same format as form.py)
@@ -507,7 +529,8 @@ def get_user_feedback_tensorboard(palette_rgb, palette_lab, triangle_colors,
         # Returns: [5,7,3,9,8,2,6,4,1,0,5,7,3,9,8,2,6,4,1,0]
     """
     # Create feedback system
-    tb_feedback = TensorBoardFeedbackSystem(session_name=session_name)
+    tb_feedback = TensorBoardFeedbackSystem(session_name=session_name,
+                                            template_name=template_name)
 
     # Log visualizations
     tb_feedback.log_initial_visualization(
